@@ -1,286 +1,1005 @@
-"""Read helpers for the video-analysis PostgreSQL database."""
+"""PostgreSQL connection management and common persistence operations."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 import os
-from collections.abc import Generator
-from contextlib import contextmanager
+from datetime import date
+from typing import Any, TypeVar
 
-from sqlalchemy import Engine, create_engine, select
+from dotenv import load_dotenv
+from sqlalchemy import create_engine, or_, select
+from sqlalchemy.engine import Engine
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
-from .sql_models import (
+from BackEnd.app.Database.adapter import (
+    caption_result_from_caption,
+    clip_embedding_mapping_from_record,
+    clip_window_metadata_from_clip_window,
+    frame_embedding_mapping_from_record,
+    frame_metadata_from_frame,
+    object_detection_result_from_object_detection,
+    object_track_result_from_object_track,
+    ocr_result_from_ocr,
+    shot_embedding_mapping_from_record,
+    shot_metadata_from_shot,
+    transcript_segment_result_from_segment,
+    video_metadata_from_video,
+)
+from BackEnd.app.Database.sql_models import (
+    Base,
     Caption,
     ClassID,
     ClipEmbeddingRecord,
     ClipWindow,
     Frame,
     FrameEmbeddingRecord,
-    OCR,
     ObjectDetection,
     ObjectTrack,
+    OCR,
     Shot,
     ShotEmbeddingRecord,
-    TrackObservation,
     TranscriptSegment,
+    TrackObservation,
     Video,
 )
 
+from BackEnd.app.contracts.pipeline import (
+    ClipEmbeddingMapping,
+    ClipWindowMetadata,
+    FrameEmbeddingMapping,
+    FrameMetadata,
+    ObjectTrackResult,
+    OCRResult,
+    ShotEmbeddingMapping,
+    ShotMetadata,
+    TrackObservationResult,
+    VideoMetadata,
+)
 
-class Postgre_Manager:
-    """Provide named read operations for each database table.
+load_dotenv()
 
-    ``DATABASE_URL`` must follow the format in ``.env.example``. It can be
-    passed to the constructor directly or supplied as a process environment
-    variable.
-    """
+_ModelT = TypeVar("_ModelT", bound=Base)
+
+
+class PostgreManager:
+    """Manage PostgreSQL sessions and records used by the pipeline."""
 
     def __init__(
         self,
         database_url: str | None = None,
         *,
-        engine: Engine | None = None,
+        echo: bool = False,
     ) -> None:
-        if engine is not None and database_url is not None:
-            raise ValueError("Provide either database_url or engine, not both.")
+        resolved_url = database_url or os.getenv("DATABASE_URL")
+        if not resolved_url:
+            raise RuntimeError(
+                "DATABASE_URL is not configured. "
+                "Set it in the environment or pass database_url explicitly."
+            )
 
-        if engine is None:
-            database_url = database_url or os.getenv("DATABASE_URL")
-            if not database_url:
-                raise ValueError(
-                    "DATABASE_URL is required. Configure it as shown in .env.example."
+        self.engine: Engine = create_engine(
+            resolved_url,
+            echo=echo,
+            pool_pre_ping=True,
+        )
+        self.session_factory = sessionmaker(
+            bind=self.engine,
+            class_=Session,
+            autoflush=False,
+            expire_on_commit=False,
+        )
+
+    def init_db(self) -> None:
+        """Create tables that do not already exist."""
+
+        Base.metadata.create_all(bind=self.engine)
+
+    @staticmethod
+    def _persist(session: Session, record: _ModelT) -> _ModelT:
+        """Commit one ORM record and return it with database values loaded."""
+
+        try:
+            session.add(record)
+            session.commit()
+            session.refresh(record)
+        except SQLAlchemyError:
+            session.rollback()
+            raise
+        return record
+
+    def add_video(
+        self,
+        video_id: str,
+        video_path: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+        keywords: list[str] | None = None,
+        author: str | None = None,
+        channel_id: str | None = None,
+        channel_url: str | None = None,
+        watch_url: str | None = None,
+        thumbnail_url: str | None = None,
+        publish_date: date | None = None,
+        duration_ms: int | None = None,
+    ) -> Video:
+        """Insert a source video and return the persisted record."""
+
+        video = Video(
+            video_id=video_id,
+            video_path=video_path,
+            title=title,
+            description=description,
+            keywords=keywords,
+            author=author,
+            channel_id=channel_id,
+            channel_url=channel_url,
+            watch_url=watch_url,
+            thumbnail_url=thumbnail_url,
+            publish_date=publish_date,
+            duration_ms=duration_ms,
+        )
+        with self.session_factory() as session:
+            return self._persist(session, video)
+
+    def add_shot(
+        self,
+        shot_id: str,
+        video_id: str,
+        shot_index: int,
+        start_ms: int,
+        end_ms: int,
+        *,
+        start_frame_idx: int | None = None,
+        end_frame_idx: int | None = None,
+    ) -> Shot:
+        """Insert a shot belonging to an existing video."""
+
+        with self.session_factory() as session:
+            if session.get(Video, video_id) is None:
+                raise ValueError(f"Video '{video_id}' does not exist.")
+
+            shot = Shot(
+                shot_id=shot_id,
+                video_id=video_id,
+                shot_index=shot_index,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                start_frame_idx=start_frame_idx,
+                end_frame_idx=end_frame_idx,
+            )
+            return self._persist(session, shot)
+
+    def add_frame(
+        self,
+        frame_id: str,
+        video_id: str,
+        shot_id: str | None,
+        timestamp_ms: int,
+        fps: float,
+        frame_idx: int,
+        source: str,
+        *,
+        n: int | None = None,
+        pts_time: float | None = None,
+        frame_path: str | None = None,
+        width: int | None = None,
+        height: int | None = None,
+    ) -> Frame:
+        """Insert a frame, optionally belonging to an existing shot."""
+
+        with self.session_factory() as session:
+            if source == "official" and shot_id is not None:
+                raise ValueError("Official frames must have shot_id=None.")
+            if shot_id is not None:
+                shot = session.get(Shot, shot_id)
+                if shot is None:
+                    raise ValueError(f"Shot '{shot_id}' does not exist.")
+                if shot.video_id != video_id:
+                    raise ValueError(
+                        f"Shot '{shot_id}' does not belong to video '{video_id}'."
+                    )
+
+            frame = Frame(
+                frame_id=frame_id,
+                n=n,
+                video_id=video_id,
+                shot_id=shot_id,
+                pts_time=pts_time,
+                timestamp_ms=timestamp_ms,
+                fps=fps,
+                frame_idx=frame_idx,
+                source=source,
+                frame_path=frame_path,
+                width=width,
+                height=height,
+            )
+            return self._persist(session, frame)
+
+    def add_clip(
+        self,
+        clip_id: str,
+        shot_id: str,
+        start_ms: int,
+        end_ms: int,
+        *,
+        start_frame_idx: int | None = None,
+        end_frame_idx: int | None = None,
+        sampling_fps: float | None = None,
+        clip_path: str | None = None,
+    ) -> ClipWindow:
+        """Insert a clip window belonging to an existing shot."""
+
+        with self.session_factory() as session:
+            if session.get(Shot, shot_id) is None:
+                raise ValueError(f"Shot '{shot_id}' does not exist.")
+
+            clip = ClipWindow(
+                clip_id=clip_id,
+                shot_id=shot_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                start_frame_idx=start_frame_idx,
+                end_frame_idx=end_frame_idx,
+                sampling_fps=sampling_fps,
+                clip_path=clip_path,
+            )
+            return self._persist(session, clip)
+
+    def add_ocr(
+        self,
+        frame_id: str,
+        n: int,
+        text: str,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+        *,
+        language: str | None = None,
+    ) -> OCR:
+        """Insert an OCR result belonging to an existing frame."""
+
+        with self.session_factory() as session:
+            if session.get(Frame, frame_id) is None:
+                raise ValueError(f"Frame '{frame_id}' does not exist.")
+
+            ocr = OCR(
+                frame_id=frame_id,
+                n=n,
+                text=text,
+                language=language,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+            )
+            return self._persist(session, ocr)
+
+    def add_ocr_records(self, results: list[OCRResult]) -> None:
+        """Insert one video's OCR results in a single transaction."""
+
+        if not results:
+            return
+
+        frame_ids = {result.frame_id for result in results}
+        result_keys = [(result.frame_id, result.n) for result in results]
+        if len(result_keys) != len(set(result_keys)):
+            raise ValueError("OCR results contain duplicate (frame_id, n) keys.")
+
+        with self.session_factory.begin() as session:
+            existing_frame_ids = set(
+                session.scalars(
+                    select(Frame.frame_id).where(Frame.frame_id.in_(frame_ids))
                 )
-            engine = create_engine(database_url, pool_pre_ping=True)
+            )
+            missing_frame_ids = sorted(frame_ids - existing_frame_ids)
+            if missing_frame_ids:
+                raise ValueError(
+                    f"OCR frames do not exist: {missing_frame_ids[:10]}."
+                )
+            session.add_all(
+                [
+                    OCR(
+                        frame_id=result.frame_id,
+                        n=result.n,
+                        text=result.text,
+                        language=result.language,
+                        x_min=result.x_min,
+                        x_max=result.x_max,
+                        y_min=result.y_min,
+                        y_max=result.y_max,
+                    )
+                    for result in results
+                ]
+            )
 
-        self._engine = engine
-        self._session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    def add_class_id(self, class_id: str, class_name: str) -> ClassID:
+        """Insert one object class, or return the matching existing record."""
 
-    @contextmanager
-    def session(self) -> Generator[Session, None, None]:
-        """Open a session for custom read-only SQLAlchemy queries."""
-        with self._session_factory() as session:
-            yield session
+        with self.session_factory() as session:
+            existing = session.get(ClassID, class_id)
+            if existing is not None:
+                if existing.class_name != class_name:
+                    raise ValueError(
+                        f"ClassID '{class_id}' already has name "
+                        f"'{existing.class_name}', not '{class_name}'."
+                    )
+                return existing
 
-    # Video
-    def get_video_by_id(self, video_id: str) -> Video | None:
-        with self.session() as session:
-            return session.get(Video, video_id)
+            class_record = ClassID(class_id=class_id, class_name=class_name)
+            return self._persist(session, class_record)
 
-    def get_videos(self) -> list[Video]:
-        with self.session() as session:
-            return list(session.scalars(select(Video).order_by(Video.video_id)))
+    def add_object_detection(
+        self,
+        frame_id: str,
+        class_id: str,
+        confidence: float,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+        *,
+        model_name: str | None = None,
+        model_version: str | None = None,
+    ) -> ObjectDetection:
+        """Insert one object detection belonging to an existing frame."""
 
-    # Shot
-    def get_shot_by_id(self, shot_id: str) -> Shot | None:
-        with self.session() as session:
-            return session.get(Shot, shot_id)
+        with self.session_factory() as session:
+            if session.get(Frame, frame_id) is None:
+                raise ValueError(f"Frame '{frame_id}' does not exist.")
+            if session.get(ClassID, class_id) is None:
+                raise ValueError(f"ClassID '{class_id}' does not exist.")
 
-    def get_shots_by_video_id(self, video_id: str) -> list[Shot]:
-        statement = select(Shot).where(Shot.video_id == video_id).order_by(Shot.shot_index)
-        with self.session() as session:
-            return list(session.scalars(statement))
+            detection = ObjectDetection(
+                frame_id=frame_id,
+                class_id=class_id,
+                confidence=confidence,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+                model_name=model_name,
+                model_version=model_version,
+            )
+            return self._persist(session, detection)
 
-    # Frame
-    def get_frame_by_id(self, frame_id: str) -> Frame | None:
-        with self.session() as session:
-            return session.get(Frame, frame_id)
+    def add_object_track(
+        self,
+        shot_id: str,
+        class_id: str,
+        start_ms: int,
+        end_ms: int,
+        observation_count: int,
+        *,
+        model_name: str,
+        model_version: str,
+        tracker_name: str,
+        tracker_version: str,
+        sampling_fps: float,
+        mapping_version: str,
+        start_frame_idx: int | None = None,
+        end_frame_idx: int | None = None,
+        avg_confidence: float | None = None,
+    ) -> ObjectTrack:
+        """Insert one object track belonging to an existing shot."""
 
-    def get_frames_by_video_id(self, video_id: str) -> list[Frame]:
-        statement = select(Frame).where(Frame.video_id == video_id).order_by(Frame.timestamp_ms)
-        with self.session() as session:
-            return list(session.scalars(statement))
+        with self.session_factory() as session:
+            if session.get(Shot, shot_id) is None:
+                raise ValueError(f"Shot '{shot_id}' does not exist.")
+            if session.get(ClassID, class_id) is None:
+                raise ValueError(f"ClassID '{class_id}' does not exist.")
 
-    def get_frames_by_shot_id(self, shot_id: str) -> list[Frame]:
-        statement = select(Frame).where(Frame.shot_id == shot_id).order_by(Frame.timestamp_ms)
-        with self.session() as session:
-            return list(session.scalars(statement))
+            track = ObjectTrack(
+                shot_id=shot_id,
+                class_id=class_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                start_frame_idx=start_frame_idx,
+                end_frame_idx=end_frame_idx,
+                observation_count=observation_count,
+                avg_confidence=avg_confidence,
+                model_name=model_name,
+                model_version=model_version,
+                tracker_name=tracker_name,
+                tracker_version=tracker_version,
+                sampling_fps=sampling_fps,
+                mapping_version=mapping_version,
+            )
+            return self._persist(session, track)
 
-    def get_frames_by_ocr(self, ocr_text: str) -> list[Frame]:
-        """Return distinct frames whose OCR text contains ``ocr_text``."""
-        if not ocr_text.strip():
-            raise ValueError("ocr_text must not be empty.")
-        statement = (
-            select(Frame)
-            .join(OCR, OCR.frame_id == Frame.frame_id)
-            .where(OCR.text.ilike(f"%{ocr_text}%"))
-            .distinct()
-            .order_by(Frame.timestamp_ms)
+    def add_track_observation(
+        self,
+        track_id: int,
+        frame_idx: int,
+        timestamp_ms: int,
+        confidence: float,
+        x_min: float,
+        x_max: float,
+        y_min: float,
+        y_max: float,
+    ) -> TrackObservation:
+        """Insert one normalized observation belonging to an object track."""
+
+        with self.session_factory() as session:
+            if session.get(ObjectTrack, track_id) is None:
+                raise ValueError(f"ObjectTrack '{track_id}' does not exist.")
+
+            observation = TrackObservation(
+                track_id=track_id,
+                frame_idx=frame_idx,
+                timestamp_ms=timestamp_ms,
+                confidence=confidence,
+                x_min=x_min,
+                x_max=x_max,
+                y_min=y_min,
+                y_max=y_max,
+            )
+            return self._persist(session, observation)
+
+    def add_tracking_result(
+        self,
+        tracks: list[ObjectTrackResult],
+        observations: list[TrackObservationResult],
+    ) -> list[ObjectTrackResult]:
+        """Insert tracks and their observations in one transaction."""
+
+        if not tracks:
+            if observations:
+                raise ValueError("Tracking observations require at least one track.")
+            return []
+
+        with self.session_factory.begin() as session:
+            track_records = [
+                ObjectTrack(
+                    shot_id=track.shot_id,
+                    class_id=track.class_id,
+                    start_ms=track.start_ms,
+                    end_ms=track.end_ms,
+                    start_frame_idx=track.start_frame_idx,
+                    end_frame_idx=track.end_frame_idx,
+                    observation_count=track.observation_count,
+                    avg_confidence=track.avg_confidence,
+                    model_name=track.model_name,
+                    model_version=track.model_version,
+                    tracker_name=track.tracker_name,
+                    tracker_version=track.tracker_version,
+                    sampling_fps=track.sampling_fps,
+                    mapping_version=track.mapping_version,
+                )
+                for track in tracks
+            ]
+            session.add_all(track_records)
+            session.flush()
+
+            track_id_map: dict[int, int] = {}
+            for track, record in zip(tracks, track_records):
+                if track.track_id is None:
+                    raise ValueError("Tracking result must have a local track_id.")
+                track_id_map[track.track_id] = record.track_id
+
+            try:
+                observation_records = [
+                    TrackObservation(
+                        track_id=track_id_map[observation.track_id],
+                        frame_idx=observation.frame_idx,
+                        timestamp_ms=observation.timestamp_ms,
+                        confidence=observation.confidence,
+                        x_min=observation.x_min,
+                        x_max=observation.x_max,
+                        y_min=observation.y_min,
+                        y_max=observation.y_max,
+                    )
+                    for observation in observations
+                ]
+            except KeyError as exc:
+                raise ValueError(
+                    f"Observation references unknown local track_id: {exc.args[0]}."
+                ) from exc
+            session.add_all(observation_records)
+
+        return [
+            replace(track, track_id=record.track_id)
+            for track, record in zip(tracks, track_records)
+        ]
+
+    def add_caption(
+        self,
+        caption_text: str,
+        model_name: str,
+        *,
+        frame_id: str | None = None,
+        clip_id: str | None = None,
+        shot_id: str | None = None,
+        structured_data: dict[str, Any] | None = None,
+        model_version: str | None = None,
+        prompt_version: str | None = None,
+        confidence: float | None = None,
+    ) -> Caption:
+        """Insert a caption targeting exactly one frame, clip, or shot."""
+
+        target_count = sum(
+            target_id is not None for target_id in (frame_id, clip_id, shot_id)
         )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        if target_count != 1:
+            raise ValueError(
+                "A caption must reference exactly one frame, clip, or shot."
+            )
 
-    # ClassID
-    def get_class_by_id(self, class_id: str) -> ClassID | None:
-        with self.session() as session:
-            return session.get(ClassID, class_id)
-
-    def get_class_by_name(self, class_name: str) -> ClassID | None:
-        statement = select(ClassID).where(ClassID.class_name == class_name)
-        with self.session() as session:
-            return session.scalars(statement).one_or_none()
-
-    # OCR
-    def get_ocr_by_id(self, frame_id: str, n: int) -> OCR | None:
-        with self.session() as session:
-            return session.get(OCR, (frame_id, n))
-
-    def get_ocr_by_frame_id(self, frame_id: str) -> list[OCR]:
-        statement = select(OCR).where(OCR.frame_id == frame_id).order_by(OCR.n)
-        with self.session() as session:
-            return list(session.scalars(statement))
-
-    # ObjectDetection
-    def get_object_detection_by_id(self, detection_id: int) -> ObjectDetection | None:
-        with self.session() as session:
-            return session.get(ObjectDetection, detection_id)
-
-    def get_object_detections_by_frame_id(self, frame_id: str) -> list[ObjectDetection]:
-        statement = (
-            select(ObjectDetection)
-            .where(ObjectDetection.frame_id == frame_id)
-            .order_by(ObjectDetection.detection_id)
+        caption = Caption(
+            frame_id=frame_id,
+            clip_id=clip_id,
+            shot_id=shot_id,
+            caption_text=caption_text,
+            structured_data=structured_data,
+            model_name=model_name,
+            model_version=model_version,
+            prompt_version=prompt_version,
+            confidence=confidence,
         )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        with self.session_factory() as session:
+            return self._persist(session, caption)
 
-    # FrameEmbeddingRecord
-    def get_frame_embedding_by_id(
-        self, faiss_id: int, index_version: int
-    ) -> FrameEmbeddingRecord | None:
-        with self.session() as session:
-            return session.get(FrameEmbeddingRecord, (faiss_id, index_version))
+    def add_transcript_segment(
+        self,
+        segment_id: str,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+        text: str,
+        *,
+        language: str | None = None,
+    ) -> TranscriptSegment:
+        """Insert a transcript segment belonging to an existing video."""
 
-    def get_frame_embeddings_by_frame_id(self, frame_id: str) -> list[FrameEmbeddingRecord]:
-        statement = (
-            select(FrameEmbeddingRecord)
-            .where(FrameEmbeddingRecord.frame_id == frame_id)
-            .order_by(FrameEmbeddingRecord.index_version)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        with self.session_factory() as session:
+            if session.get(Video, video_id) is None:
+                raise ValueError(f"Video '{video_id}' does not exist.")
 
-    # TranscriptSegment
-    def get_transcript_segment_by_id(self, segment_id: str) -> TranscriptSegment | None:
-        with self.session() as session:
-            return session.get(TranscriptSegment, segment_id)
+            segment = TranscriptSegment(
+                segment_id=segment_id,
+                video_id=video_id,
+                start_ms=start_ms,
+                end_ms=end_ms,
+                text=text,
+                language=language,
+            )
+            return self._persist(session, segment)
 
-    def get_transcript_segments_by_video_id(self, video_id: str) -> list[TranscriptSegment]:
-        statement = (
-            select(TranscriptSegment)
-            .where(TranscriptSegment.video_id == video_id)
-            .order_by(TranscriptSegment.start_ms)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+    def add_frame_embedding_record(
+        self,
+        faiss_id: int,
+        index_version: int,
+        frame_id: str,
+        model_name: str,
+    ) -> FrameEmbeddingRecord:
+        """Insert a FAISS mapping for an existing frame."""
 
-    # ObjectTrack
-    def get_object_track_by_id(self, track_id: int) -> ObjectTrack | None:
-        with self.session() as session:
-            return session.get(ObjectTrack, track_id)
+        with self.session_factory() as session:
+            if session.get(Frame, frame_id) is None:
+                raise ValueError(f"Frame '{frame_id}' does not exist.")
 
-    def get_object_tracks_by_shot_id(self, shot_id: str) -> list[ObjectTrack]:
-        statement = (
-            select(ObjectTrack)
-            .where(ObjectTrack.shot_id == shot_id)
-            .order_by(ObjectTrack.track_id)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+            record = FrameEmbeddingRecord(
+                faiss_id=faiss_id,
+                index_version=index_version,
+                frame_id=frame_id,
+                model_name=model_name,
+            )
+            return self._persist(session, record)
 
-    # TrackObservation
-    def get_track_observation_by_id(
-        self, track_id: int, frame_idx: int
-    ) -> TrackObservation | None:
-        with self.session() as session:
-            return session.get(TrackObservation, (track_id, frame_idx))
+    def add_clip_embedding_record(
+        self,
+        faiss_id: int,
+        index_version: int,
+        clip_id: str,
+        model_name: str,
+    ) -> ClipEmbeddingRecord:
+        """Insert a FAISS mapping for an existing clip window."""
 
-    def get_track_observations_by_track_id(self, track_id: int) -> list[TrackObservation]:
-        statement = (
-            select(TrackObservation)
-            .where(TrackObservation.track_id == track_id)
-            .order_by(TrackObservation.frame_idx)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        with self.session_factory() as session:
+            if session.get(ClipWindow, clip_id) is None:
+                raise ValueError(f"Clip '{clip_id}' does not exist.")
 
-    # ClipWindow
-    def get_clip_by_id(self, clip_id: str) -> ClipWindow | None:
-        with self.session() as session:
-            return session.get(ClipWindow, clip_id)
+            record = ClipEmbeddingRecord(
+                faiss_id=faiss_id,
+                index_version=index_version,
+                clip_id=clip_id,
+                model_name=model_name,
+            )
+            return self._persist(session, record)
 
-    def get_clips_by_shot_id(self, shot_id: str) -> list[ClipWindow]:
-        statement = (
-            select(ClipWindow)
-            .where(ClipWindow.shot_id == shot_id)
-            .order_by(ClipWindow.start_ms)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+    def add_shot_embedding_record(
+        self,
+        faiss_id: int,
+        index_version: int,
+        shot_id: str,
+        model_name: str,
+        model_version: str,
+        *,
+        pooling_method: str = "mean",
+    ) -> ShotEmbeddingRecord:
+        """Insert a FAISS mapping for an existing shot."""
 
-    # ClipEmbeddingRecord
-    def get_clip_embedding_by_id(
-        self, faiss_id: int, index_version: int
-    ) -> ClipEmbeddingRecord | None:
-        with self.session() as session:
-            return session.get(ClipEmbeddingRecord, (faiss_id, index_version))
+        with self.session_factory() as session:
+            if session.get(Shot, shot_id) is None:
+                raise ValueError(f"Shot '{shot_id}' does not exist.")
 
-    def get_clip_embeddings_by_clip_id(self, clip_id: str) -> list[ClipEmbeddingRecord]:
-        statement = (
-            select(ClipEmbeddingRecord)
-            .where(ClipEmbeddingRecord.clip_id == clip_id)
-            .order_by(ClipEmbeddingRecord.index_version)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+            record = ShotEmbeddingRecord(
+                faiss_id=faiss_id,
+                index_version=index_version,
+                shot_id=shot_id,
+                model_name=model_name,
+                model_version=model_version,
+                pooling_method=pooling_method,
+            )
+            return self._persist(session, record)
 
-    # ShotEmbeddingRecord
-    def get_shot_embedding_by_id(
-        self, faiss_id: int, index_version: int
-    ) -> ShotEmbeddingRecord | None:
-        with self.session() as session:
-            return session.get(ShotEmbeddingRecord, (faiss_id, index_version))
+    def get_frame_embedding_mappings(
+        self,
+        frame_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+    ) -> list[FrameEmbeddingMapping]:
+        """Return existing frame mappings for one FAISS/model version."""
 
-    def get_shot_embeddings_by_shot_id(self, shot_id: str) -> list[ShotEmbeddingRecord]:
-        statement = (
-            select(ShotEmbeddingRecord)
-            .where(ShotEmbeddingRecord.shot_id == shot_id)
-            .order_by(ShotEmbeddingRecord.index_version)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        if not frame_ids:
+            return []
+        with self.session_factory() as session:
+            records = session.scalars(
+                select(FrameEmbeddingRecord).where(
+                    FrameEmbeddingRecord.frame_id.in_(frame_ids),
+                    FrameEmbeddingRecord.index_version == index_version,
+                    FrameEmbeddingRecord.model_name == model_name,
+                )
+            ).all()
+            return [frame_embedding_mapping_from_record(record) for record in records]
 
-    # Caption
-    def get_caption_by_id(self, caption_id: int) -> Caption | None:
-        with self.session() as session:
-            return session.get(Caption, caption_id)
+    def get_clip_embedding_mappings(
+        self,
+        clip_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+    ) -> list[ClipEmbeddingMapping]:
+        """Return existing clip mappings for one FAISS/model version."""
 
-    def get_captions_by_frame_id(self, frame_id: str) -> list[Caption]:
-        statement = (
-            select(Caption)
-            .where(Caption.frame_id == frame_id)
-            .order_by(Caption.created_at)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        if not clip_ids:
+            return []
+        with self.session_factory() as session:
+            records = session.scalars(
+                select(ClipEmbeddingRecord).where(
+                    ClipEmbeddingRecord.clip_id.in_(clip_ids),
+                    ClipEmbeddingRecord.index_version == index_version,
+                    ClipEmbeddingRecord.model_name == model_name,
+                )
+            ).all()
+            return [clip_embedding_mapping_from_record(record) for record in records]
 
-    def get_captions_by_clip_id(self, clip_id: str) -> list[Caption]:
-        statement = (
-            select(Caption)
-            .where(Caption.clip_id == clip_id)
-            .order_by(Caption.created_at)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+    def get_shot_embedding_mappings(
+        self,
+        shot_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+        model_version: str,
+        pooling_method: str,
+    ) -> list[ShotEmbeddingMapping]:
+        """Return existing shot mappings for one FAISS/model version."""
 
-    def get_captions_by_shot_id(self, shot_id: str) -> list[Caption]:
-        statement = (
-            select(Caption)
-            .where(Caption.shot_id == shot_id)
-            .order_by(Caption.created_at)
-        )
-        with self.session() as session:
-            return list(session.scalars(statement))
+        if not shot_ids:
+            return []
+        with self.session_factory() as session:
+            records = session.scalars(
+                select(ShotEmbeddingRecord).where(
+                    ShotEmbeddingRecord.shot_id.in_(shot_ids),
+                    ShotEmbeddingRecord.index_version == index_version,
+                    ShotEmbeddingRecord.model_name == model_name,
+                    ShotEmbeddingRecord.model_version == model_version,
+                    ShotEmbeddingRecord.pooling_method == pooling_method,
+                )
+            ).all()
+            return [shot_embedding_mapping_from_record(record) for record in records]
 
-    def dispose(self) -> None:
-        """Close all pooled connections."""
-        self._engine.dispose()
+    def add_frame_embedding_records(
+        self,
+        mappings: list[FrameEmbeddingMapping],
+    ) -> None:
+        """Insert frame mappings in one PostgreSQL transaction."""
+
+        if not mappings:
+            return
+        frame_ids = {mapping.frame_id for mapping in mappings}
+        with self.session_factory.begin() as session:
+            existing_ids = set(
+                session.scalars(select(Frame.frame_id).where(Frame.frame_id.in_(frame_ids)))
+            )
+            missing_ids = sorted(frame_ids - existing_ids)
+            if missing_ids:
+                raise ValueError(f"Frames do not exist: {missing_ids[:10]}.")
+            session.add_all(
+                [
+                    FrameEmbeddingRecord(
+                        faiss_id=mapping.faiss_id,
+                        index_version=mapping.index_version,
+                        frame_id=mapping.frame_id,
+                        model_name=mapping.model_name,
+                    )
+                    for mapping in mappings
+                ]
+            )
+
+    def add_clip_embedding_records(
+        self,
+        mappings: list[ClipEmbeddingMapping],
+    ) -> None:
+        """Insert clip mappings in one PostgreSQL transaction."""
+
+        if not mappings:
+            return
+        clip_ids = {mapping.clip_id for mapping in mappings}
+        with self.session_factory.begin() as session:
+            existing_ids = set(
+                session.scalars(
+                    select(ClipWindow.clip_id).where(ClipWindow.clip_id.in_(clip_ids))
+                )
+            )
+            missing_ids = sorted(clip_ids - existing_ids)
+            if missing_ids:
+                raise ValueError(f"Clips do not exist: {missing_ids[:10]}.")
+            session.add_all(
+                [
+                    ClipEmbeddingRecord(
+                        faiss_id=mapping.faiss_id,
+                        index_version=mapping.index_version,
+                        clip_id=mapping.clip_id,
+                        model_name=mapping.model_name,
+                    )
+                    for mapping in mappings
+                ]
+            )
+
+    def add_shot_embedding_records(
+        self,
+        mappings: list[ShotEmbeddingMapping],
+    ) -> None:
+        """Insert shot mappings in one PostgreSQL transaction."""
+
+        if not mappings:
+            return
+        shot_ids = {mapping.shot_id for mapping in mappings}
+        with self.session_factory.begin() as session:
+            existing_ids = set(
+                session.scalars(select(Shot.shot_id).where(Shot.shot_id.in_(shot_ids)))
+            )
+            missing_ids = sorted(shot_ids - existing_ids)
+            if missing_ids:
+                raise ValueError(f"Shots do not exist: {missing_ids[:10]}.")
+            session.add_all(
+                [
+                    ShotEmbeddingRecord(
+                        faiss_id=mapping.faiss_id,
+                        index_version=mapping.index_version,
+                        shot_id=mapping.shot_id,
+                        model_name=mapping.model_name,
+                        model_version=mapping.model_version,
+                        pooling_method=mapping.pooling_method,
+                    )
+                    for mapping in mappings
+                ]
+            )
+
+    def get_frame_record_by_frame_id(self, frame_id: str) -> FrameMetadata:
+        with self.session_factory() as session:
+            data = session.get(Frame, frame_id)
+            if data is None:
+                raise ValueError(f"Frame '{frame_id}' does not exist.")
+
+            return frame_metadata_from_frame(data)
+
+    def get_frame_record_by_video_id(self, video_id: str) -> list[FrameMetadata]:
+        """Return all frames belonging to a video, ordered by frame index."""
+
+        with self.session_factory() as session:
+            if session.get(Video, video_id) is None:
+                raise ValueError(f"Video '{video_id}' does not exist.")
+
+            statement = (
+                select(Frame)
+                .where(Frame.video_id == video_id)
+                .order_by(Frame.frame_idx)
+            )
+            frames = session.scalars(statement).all()
+
+            return [frame_metadata_from_frame(frame) for frame in frames]
+
+    def get_list_video(self) -> list[VideoMetadata]:
+        with self.session_factory() as session:
+            statement = (
+                select(Video).order_by(Video.video_id)
+            )
+
+            Videos = session.scalars(statement).all()
+
+            return [video_metadata_from_video(vid) for vid in Videos]
+    def get_list_frame_in_shot(self, shot_id: str) -> list[FrameMetadata]:
+        """Return all frames belonging to a shot, ordered by frame index."""
+
+        with self.session_factory() as session:
+            if session.get(Shot, shot_id) is None:
+                raise ValueError(f"Shot '{shot_id}' does not exist.")
+
+            statement = (
+                select(Frame)
+                .where(Frame.shot_id == shot_id)
+                .order_by(Frame.frame_idx)
+            )
+            frames = session.scalars(statement).all()
+
+            return [frame_metadata_from_frame(frame) for frame in frames]
+
+    def get_list_shot_in_video(self, video_id: str) -> list[ShotMetadata]:
+        """Return all shots belonging to a video, ordered by shot index."""
+
+        with self.session_factory() as session:
+            if session.get(Video, video_id) is None:
+                raise ValueError(f"Video '{video_id}' does not exist.")
+
+            statement = (
+                select(Shot)
+                .where(Shot.video_id == video_id)
+                .order_by(Shot.shot_index)
+            )
+            shots = session.scalars(statement).all()
+
+            return [shot_metadata_from_shot(shot) for shot in shots]
+
+    def get_list_clip_in_shot(self, shot_id: str) -> list[ClipWindowMetadata]:
+        """Return all clips belonging to a shot, ordered by start time."""
+
+        with self.session_factory() as session:
+            if session.get(Shot, shot_id) is None:
+                raise ValueError(f"Shot '{shot_id}' does not exist.")
+
+            statement = (
+                select(ClipWindow)
+                .where(ClipWindow.shot_id == shot_id)
+                .order_by(ClipWindow.start_ms)
+            )
+            clips = session.scalars(statement).all()
+
+            return [
+                clip_window_metadata_from_clip_window(clip) for clip in clips
+            ]
+
+    def get_evidence_by_video_id_and_time(
+        self,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+    ) -> list[list[Any]]:
+        """Return metadata overlapping a video time range by modality.
+
+        The returned lists are ordered as shots, clips, frames, OCR, ASR,
+        captions, object detections, and object tracks. The service layer
+        converts this result into an ``EvidenceBundle``.
+        """
+
+        if start_ms < 0 or end_ms < start_ms:
+            raise ValueError("Time range must satisfy 0 <= start_ms <= end_ms.")
+
+        with self.session_factory() as session:
+            if session.get(Video, video_id) is None:
+                raise ValueError(f"Video '{video_id}' does not exist.")
+
+            shots = session.scalars(
+                select(Shot)
+                .where(
+                    Shot.video_id == video_id,
+                    Shot.start_ms <= end_ms,
+                    Shot.end_ms >= start_ms,
+                )
+                .order_by(Shot.start_ms, Shot.shot_index)
+            ).all()
+
+            clips = session.scalars(
+                select(ClipWindow)
+                .join(Shot)
+                .where(
+                    Shot.video_id == video_id,
+                    ClipWindow.start_ms <= end_ms,
+                    ClipWindow.end_ms >= start_ms,
+                )
+                .order_by(ClipWindow.start_ms, ClipWindow.clip_id)
+            ).all()
+
+            frames = session.scalars(
+                select(Frame)
+                .where(
+                    Frame.video_id == video_id,
+                    Frame.timestamp_ms >= start_ms,
+                    Frame.timestamp_ms <= end_ms,
+                )
+                .order_by(Frame.timestamp_ms, Frame.frame_idx)
+            ).all()
+
+            ocr_records = session.scalars(
+                select(OCR)
+                .join(Frame)
+                .where(
+                    Frame.video_id == video_id,
+                    Frame.timestamp_ms >= start_ms,
+                    Frame.timestamp_ms <= end_ms,
+                )
+                .order_by(Frame.timestamp_ms, OCR.n)
+            ).all()
+
+            transcript_segments = session.scalars(
+                select(TranscriptSegment)
+                .where(
+                    TranscriptSegment.video_id == video_id,
+                    TranscriptSegment.start_ms <= end_ms,
+                    TranscriptSegment.end_ms >= start_ms,
+                )
+                .order_by(TranscriptSegment.start_ms, TranscriptSegment.segment_id)
+            ).all()
+
+            object_detections = session.scalars(
+                select(ObjectDetection)
+                .join(Frame)
+                .where(
+                    Frame.video_id == video_id,
+                    Frame.timestamp_ms >= start_ms,
+                    Frame.timestamp_ms <= end_ms,
+                )
+                .order_by(Frame.timestamp_ms, ObjectDetection.detection_id)
+            ).all()
+
+            object_tracks = session.scalars(
+                select(ObjectTrack)
+                .join(Shot)
+                .where(
+                    Shot.video_id == video_id,
+                    ObjectTrack.start_ms <= end_ms,
+                    ObjectTrack.end_ms >= start_ms,
+                )
+                .order_by(ObjectTrack.start_ms, ObjectTrack.track_id)
+            ).all()
+
+            frame_ids = [frame.frame_id for frame in frames]
+            clip_ids = [clip.clip_id for clip in clips]
+            shot_ids = [shot.shot_id for shot in shots]
+            caption_conditions = []
+            if frame_ids:
+                caption_conditions.append(Caption.frame_id.in_(frame_ids))
+            if clip_ids:
+                caption_conditions.append(Caption.clip_id.in_(clip_ids))
+            if shot_ids:
+                caption_conditions.append(Caption.shot_id.in_(shot_ids))
+
+            captions = []
+            if caption_conditions:
+                captions = session.scalars(
+                    select(Caption)
+                    .where(or_(*caption_conditions))
+                    .order_by(Caption.caption_id)
+                ).all()
+
+        return [
+            [shot_metadata_from_shot(shot) for shot in shots],
+            [clip_window_metadata_from_clip_window(clip) for clip in clips],
+            [frame_metadata_from_frame(frame) for frame in frames],
+            [ocr_result_from_ocr(ocr) for ocr in ocr_records],
+            [
+                transcript_segment_result_from_segment(segment)
+                for segment in transcript_segments
+            ],
+            [caption_result_from_caption(caption) for caption in captions],
+            [
+                object_detection_result_from_object_detection(detection)
+                for detection in object_detections
+            ],
+            [object_track_result_from_object_track(track) for track in object_tracks],
+        ]

@@ -24,7 +24,7 @@ cách module khác truy vấn PostgreSQL, FAISS hoặc Elasticsearch.
 | `TimeRangeModel` | Base cho dữ liệu gắn với một khoảng/thời điểm trong video. | `SearchHit`, candidate, evidence, result |
 | `CanonicalEntityRef` | Địa chỉ chuẩn tới video và tùy chọn shot, clip, frame cùng thời gian. | Shared Evidence Layer → utility tools/UI |
 | `Provenance` | Nguồn gốc evidence: model, version, lần chạy và confidence. | Offline pipeline → Shared Evidence Layer |
-| `EvidenceItem` | Một evidence có ID, loại, video, thời gian và dữ liệu bổ sung. | Shared Evidence Layer → VQA/Verifier |
+| `EvidenceItem` | Contract evidence tổng quát, giữ lại cho các use case cần dữ liệu phẳng. | Shared Evidence Layer → use case generic |
 | `TemporalNeighbors` | Các entity chuẩn đứng trước và sau một entity/candidate. | Shared Evidence Layer → KIS/UI |
 | `MediaReference` | Đường dẫn local hoặc URL để hiển thị entity trên UI. | Shared Evidence Layer → UI |
 
@@ -38,15 +38,11 @@ OCR/object evidence cần thêm `frame_id` để truy vết chính xác.
 
 ### `EvidenceItem` và `Provenance`
 
-`EvidenceItem` là đơn vị evidence chung cho frame, OCR, ASR, caption, object và
-track. Vì kế thừa `CanonicalEntityRef`, item luôn có `video_id`, thời gian và có
-thể mang `frame_id`, `shot_id`, `clip_id` khi modality liên quan. Ví dụ OCR và
-object detection phải giữ `frame_id`; track thường giữ `shot_id`; ASR có thể chỉ
-cần `video_id` cùng khoảng thời gian. `entity_id` và `entity_type` cho phép
-Verifier trích dẫn đúng evidence đã được cấp. `text` dùng cho OCR/ASR/caption,
-`media_ref` dùng cho media liên quan, còn `metadata` chứa thuộc tính riêng của
-modality như bounding box hoặc object class. `provenance` cho biết evidence đến
-từ model/run nào; `EvidenceBundle` cũng có provenance cấp bundle.
+`EvidenceItem` là contract tổng quát cho trường hợp cần một danh sách evidence
+phẳng. Vì kế thừa `CanonicalEntityRef`, item luôn có `video_id`, thời gian và có
+thể mang `frame_id`, `shot_id`, `clip_id`. `EvidenceBundle` không dùng type này
+nữa: bundle dùng các contract chuyên biệt để không làm mất field đặc thù của OCR,
+object detection, track và caption.
 
 ## Query và planning
 
@@ -122,10 +118,11 @@ gốc vẫn phải được giữ để Handlers và Verifier giải thích kế
 
 ### `EvidenceBundle`
 
-Bundle được tải theo một `video_id` và vùng thời gian. Các danh sách phân theo
-modality (`frames`, `ocr`, `asr`, `captions`, `objects`, `tracks`) nhưng đều dùng
-`EvidenceItem`, nhờ đó mỗi evidence luôn có ID để VLM chỉ trích dẫn dữ liệu đã
-được cung cấp.
+Bundle được tải theo một `video_id` và vùng thời gian. Mỗi danh sách giữ đúng
+contract do adapter tạo ra: `ShotMetadata`, `ClipWindowMetadata`,
+`FrameMetadata`, `OCRResult`, `TranscriptSegmentResult`, `CaptionResult`,
+`ObjectDetectionResult` và `ObjectTrackResult`. Shot và clip giữ context cấu
+trúc/media, còn các modality còn lại cung cấp evidence cho VQA/Verifier.
 
 ### `KISResult`
 

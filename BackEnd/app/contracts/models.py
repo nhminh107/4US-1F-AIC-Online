@@ -6,6 +6,17 @@ from typing import Any, Literal, Self
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
+from BackEnd.app.contracts.pipeline import (
+    CaptionResult,
+    ClipWindowMetadata,
+    FrameMetadata,
+    ObjectDetectionResult,
+    ObjectTrackResult,
+    OCRResult,
+    ShotMetadata,
+    TranscriptSegmentResult,
+)
+
 
 class ContractModel(BaseModel):
     """Base configuration shared by contracts exchanged between modules."""
@@ -163,13 +174,14 @@ class RankedCandidateRegion(TimeRangeModel):
 
 class EvidenceBundle(TimeRangeModel):
     video_id: str = Field(min_length=1)
-    frames: list[EvidenceItem] = Field(default_factory=list)
-    ocr: list[EvidenceItem] = Field(default_factory=list)
-    asr: list[EvidenceItem] = Field(default_factory=list)
-    captions: list[EvidenceItem] = Field(default_factory=list)
-    objects: list[EvidenceItem] = Field(default_factory=list)
-    tracks: list[EvidenceItem] = Field(default_factory=list)
-    provenance: list[Provenance] = Field(default_factory=list)
+    shots: list[ShotMetadata] = Field(default_factory=list)
+    clips: list[ClipWindowMetadata] = Field(default_factory=list)
+    frames: list[FrameMetadata] = Field(default_factory=list)
+    ocr: list[OCRResult] = Field(default_factory=list)
+    asr: list[TranscriptSegmentResult] = Field(default_factory=list)
+    captions: list[CaptionResult] = Field(default_factory=list)
+    objects: list[ObjectDetectionResult] = Field(default_factory=list)
+    tracks: list[ObjectTrackResult] = Field(default_factory=list)
 
 
 class KISResult(TimeRangeModel):
