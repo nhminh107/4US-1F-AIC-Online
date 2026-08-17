@@ -44,12 +44,11 @@ class Provenance(ContractModel):
     confidence: float | None = Field(default=None, ge=0, le=1)
 
 
-class EvidenceItem(TimeRangeModel):
+class EvidenceItem(CanonicalEntityRef):
     """Typed evidence item returned by the shared evidence layer."""
 
     entity_id: str = Field(min_length=1)
     entity_type: str = Field(min_length=1)
-    video_id: str = Field(min_length=1)
     text: str | None = None
     media_ref: str | None = None
     confidence: float | None = Field(default=None, ge=0, le=1)
@@ -64,10 +63,11 @@ class TemporalNeighbors(ContractModel):
     next: list[CanonicalEntityRef] = Field(default_factory=list)
 
 
-class MediaReference(ContractModel):
+class MediaReference(CanonicalEntityRef):
     """A local path or URL used by the UI to render a canonical entity."""
 
     entity_id: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
     media_type: str = Field(min_length=1)
     uri: str = Field(min_length=1)
 
@@ -123,13 +123,12 @@ class ToolCall(ContractModel):
     parameters: dict[str, Any] = Field(default_factory=dict)
 
 
-class SearchHit(TimeRangeModel):
+class SearchHit(CanonicalEntityRef):
     tool_call_id: str | None = None
     event_id: str | None = None
     source: str = Field(min_length=1)
     entity_type: str = Field(min_length=1)
     entity_id: str = Field(min_length=1)
-    video_id: str = Field(min_length=1)
     rank: int = Field(ge=1)
     raw_score: float
 

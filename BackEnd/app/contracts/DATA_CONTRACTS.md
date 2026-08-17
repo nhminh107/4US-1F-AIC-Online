@@ -32,12 +32,17 @@ cách module khác truy vấn PostgreSQL, FAISS hoặc Elasticsearch.
 
 Được dùng khi một module cần trỏ chính xác đến dữ liệu Offline mà không tự JOIN
 giữa các bảng. `video_id` và khoảng thời gian là bắt buộc; `shot_id`, `clip_id`,
-`frame_id` có mặt khi entity tương ứng đã được resolve.
+`frame_id` có mặt khi entity tương ứng đã được resolve. Các ID chi tiết đều
+optional: một vùng candidate có thể chỉ cần `video_id` và thời gian, trong khi
+OCR/object evidence cần thêm `frame_id` để truy vết chính xác.
 
 ### `EvidenceItem` và `Provenance`
 
 `EvidenceItem` là đơn vị evidence chung cho frame, OCR, ASR, caption, object và
-track. `entity_id`, `entity_type`, `video_id`, `start_ms`, `end_ms` cho phép
+track. Vì kế thừa `CanonicalEntityRef`, item luôn có `video_id`, thời gian và có
+thể mang `frame_id`, `shot_id`, `clip_id` khi modality liên quan. Ví dụ OCR và
+object detection phải giữ `frame_id`; track thường giữ `shot_id`; ASR có thể chỉ
+cần `video_id` cùng khoảng thời gian. `entity_id` và `entity_type` cho phép
 Verifier trích dẫn đúng evidence đã được cấp. `text` dùng cho OCR/ASR/caption,
 `media_ref` dùng cho media liên quan, còn `metadata` chứa thuộc tính riêng của
 modality như bounding box hoặc object class. `provenance` cho biết evidence đến
@@ -91,10 +96,11 @@ các event khác nhau.
 
 Mọi `frame_search`, `clip_search`, `ocr_search`, `asr_search`, `object_search`
 và các tool khác phải trả contract này. `source` cho biết retriever; `entity_type`
-và `entity_id` xác định evidence; `video_id` cùng thời gian đã được resolve.
-`rank` bắt đầu từ 1, `raw_score` được giữ nguyên theo retriever để Fusion chuẩn
-hóa theo source khi cần. `tool_call_id` liên kết với Planner và `event_id` bảo
-toàn ngữ cảnh TRAKE.
+và `entity_id` xác định evidence. Vì kế thừa `CanonicalEntityRef`, hit đã có
+`video_id`, thời gian và có thể kèm `frame_id`, `shot_id`, `clip_id` theo
+granularity của retriever. `rank` bắt đầu từ 1, `raw_score` được giữ nguyên theo
+retriever để Fusion chuẩn hóa theo source khi cần. `tool_call_id` liên kết với
+Planner và `event_id` bảo toàn ngữ cảnh TRAKE.
 
 ### `CandidateRegion` và `RankedCandidateRegion`
 
