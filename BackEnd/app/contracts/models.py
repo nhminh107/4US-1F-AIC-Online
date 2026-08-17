@@ -100,14 +100,10 @@ class EvidenceBundle(BaseModel):
 @dataclass(frozen=True, slots=True)
 class KISResult(BaseModel):
     video_id: str
-
     start_ms: int
     end_ms: int
-
     representative_frame_id: str
-
     score: float
-
     evidence_ids: list[str]
 
 @dataclass(frozen=True, slots=True)
@@ -134,9 +130,6 @@ class TemporalSequence(BaseModel):
 @dataclass(frozen=True, slots=True)
 class VerifiedResult(BaseModel):
     status: str
-
     confidence: float
-
     supporting_evidence_ids: list[str]
-
     failed_constraints: list[str]
