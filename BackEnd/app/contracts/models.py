@@ -1,135 +1,205 @@
-from pydantic import BaseModel
-from dataclasses import dataclass
+"""Shared data contracts for the online retrieval pipeline."""
 
-@dataclass(frozen=True, slots=True)
-class RawQuery(BaseModel):
-    query_id: str 
-    session_id: str
-    text: str 
-    feedback: str | None
+from __future__ import annotations
 
-class Event(BaseModel):
-    event_id: str 
-    description: str 
+from typing import Any, Literal, Self
 
-@dataclass(frozen=True, slots=True)
-class StructuredQuery(BaseModel):
-    query_id: str
-    task: str
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 
-    visual_queries: list[str]
-    ocr_constraints: list[str]
-    asr_constraints: list[str]
-    object_constraints: list[str]
-    feedback: list[str]
-    events: list[Event]
-    temporal_constraint: list[(Event, Event)]
-    negative_constraints: list[str]
 
-@dataclass(frozen=True, slots=True)
-class ToolCall(BaseModel):
-    tool_call_id: str
-    tool_name: str
+class ContractModel(BaseModel):
+    """Base configuration shared by contracts exchanged between modules."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True, populate_by_name=True)
+
+
+class TimeRangeModel(ContractModel):
+    """A millisecond interval or a point in time within a video."""
+
+    start_ms: int = Field(ge=0)
+    end_ms: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def validate_time_range(self) -> Self:
+        if self.end_ms < self.start_ms:
+            raise ValueError("end_ms must be greater than or equal to start_ms")
+        return self
+
+
+class CanonicalEntityRef(TimeRangeModel):
+    """Canonical reference that resolves an offline entity for online modules."""
+
+    video_id: str = Field(min_length=1)
+    shot_id: str | None = None
+    clip_id: str | None = None
+    frame_id: str | None = None
+
+
+class Provenance(ContractModel):
+    """Origin metadata attached to evidence produced by an offline run."""
+
+    model_name: str | None = None
+    model_version: str | None = None
+    run_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+
+
+class EvidenceItem(TimeRangeModel):
+    """Typed evidence item returned by the shared evidence layer."""
+
+    entity_id: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    video_id: str = Field(min_length=1)
+    text: str | None = None
+    media_ref: str | None = None
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    provenance: Provenance | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class TemporalNeighbors(ContractModel):
+    """Neighbor references around a known entity or candidate region."""
+
+    previous: list[CanonicalEntityRef] = Field(default_factory=list)
+    next: list[CanonicalEntityRef] = Field(default_factory=list)
+
+
+class MediaReference(ContractModel):
+    """A local path or URL used by the UI to render a canonical entity."""
+
+    entity_id: str = Field(min_length=1)
+    media_type: str = Field(min_length=1)
+    uri: str = Field(min_length=1)
+
+
+class RawQuery(ContractModel):
+    query_id: str | None = None
+    session_id: str | None = None
+    text: str = Field(min_length=1)
+    image_ref: str | None = None
+    video_ref: str | None = None
+    feedback: str | None = None
+
+
+class Event(ContractModel):
+    event_id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+
+
+class TemporalConstraint(ContractModel):
+    before: str = Field(min_length=1)
+    after: str = Field(min_length=1)
+    max_gap_ms: int | None = Field(default=None, gt=0)
+    allow_overlap: bool = False
+
+
+class StructuredQuery(ContractModel):
+    query_id: str = Field(min_length=1)
+    task: Literal["KIS", "VQA", "TRAKE"]
+    question: str = ""
+    visual_queries: list[str] = Field(default_factory=list)
+    ocr_constraints: list[str] = Field(default_factory=list)
+    asr_constraints: list[str] = Field(default_factory=list)
+    object_constraints: list[str] = Field(default_factory=list)
+    feedback: list[str] = Field(default_factory=list)
+    events: list[Event] = Field(default_factory=list)
+    temporal_constraints: list[TemporalConstraint] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("temporal_constraints", "temporal_constraint"),
+    )
+    negative_constraints: list[str] = Field(default_factory=list)
+
+    @property
+    def temporal_constraint(self) -> list[TemporalConstraint]:
+        """Backward-compatible alias for the previous singular field name."""
+
+        return self.temporal_constraints
+
+
+class ToolCall(ContractModel):
+    tool_call_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
     event_id: str | None = None
-    parameters: dict
+    parameters: dict[str, Any] = Field(default_factory=dict)
 
-@dataclass(frozen=True, slots=True)
-class SearchHit(BaseModel):
+
+class SearchHit(TimeRangeModel):
     tool_call_id: str | None = None
     event_id: str | None = None
-    source: str
-    entity_type: str
-    entity_id: str
-    video_id: str
-    start_ms: int
-    end_ms: int
-    rank: int
+    source: str = Field(min_length=1)
+    entity_type: str = Field(min_length=1)
+    entity_id: str = Field(min_length=1)
+    video_id: str = Field(min_length=1)
+    rank: int = Field(ge=1)
     raw_score: float
 
-@dataclass(frozen=True, slots=True)
-class CandidateEvidence(BaseModel):
-    source: str
-    entity_id: str
-    rank: int
+
+class CandidateEvidence(ContractModel):
+    source: str = Field(min_length=1)
+    entity_id: str = Field(min_length=1)
+    rank: int = Field(ge=1)
     raw_score: float
 
-@dataclass(frozen=True, slots=True)
-class CandidateRegion(BaseModel):
-    candidate_id: str
-    event_id: str | None
-    video_id: str
-    start_ms: int
-    end_ms: int
-    evidence: list[CandidateEvidence]
 
-@dataclass(frozen=True, slots=True)
-class ConstraintResult(BaseModel):
+class CandidateRegion(TimeRangeModel):
+    candidate_id: str = Field(min_length=1)
+    event_id: str | None = None
+    video_id: str = Field(min_length=1)
+    evidence: list[CandidateEvidence] = Field(default_factory=list)
+
+
+class ConstraintResult(ContractModel):
     hard_constraints_passed: bool
     negative_constraints_passed: bool
 
-@dataclass(frozen=True, slots=True)
-class RankedCandidateRegion(BaseModel):
-    candidate_id: str
-    event_id: str | None
 
-    video_id: str
-
-    start_ms: int
-    end_ms: int
-
+class RankedCandidateRegion(TimeRangeModel):
+    candidate_id: str = Field(min_length=1)
+    event_id: str | None = None
+    video_id: str = Field(min_length=1)
     fusion_score: float
-
     constraint_result: ConstraintResult
+    evidence: list[CandidateEvidence] = Field(default_factory=list)
 
-    evidence: list[CandidateEvidence]
 
-@dataclass(frozen=True, slots=True)
-class EvidenceBundle(BaseModel):
-    video_id: str
+class EvidenceBundle(TimeRangeModel):
+    video_id: str = Field(min_length=1)
+    frames: list[EvidenceItem] = Field(default_factory=list)
+    ocr: list[EvidenceItem] = Field(default_factory=list)
+    asr: list[EvidenceItem] = Field(default_factory=list)
+    captions: list[EvidenceItem] = Field(default_factory=list)
+    objects: list[EvidenceItem] = Field(default_factory=list)
+    tracks: list[EvidenceItem] = Field(default_factory=list)
+    provenance: list[Provenance] = Field(default_factory=list)
 
-    start_ms: int
-    end_ms: int
 
-    frames: list
-    ocr: list
-    asr: list
-    captions: list
-    objects: list
-    tracks: list
+class KISResult(TimeRangeModel):
+    video_id: str = Field(min_length=1)
+    representative_frame_id: str = Field(min_length=1)
+    score: float = Field(ge=0, le=1)
+    evidence_ids: list[str] = Field(default_factory=list)
 
-@dataclass(frozen=True, slots=True)
-class KISResult(BaseModel):
-    video_id: str
-    start_ms: int
-    end_ms: int
-    representative_frame_id: str
-    score: float
-    evidence_ids: list[str]
 
-@dataclass(frozen=True, slots=True)
-class VQAResult(BaseModel):
-    answer: str
-    confidence: float
-    evidence_ids: list[str]
-    status: str
+class VQAResult(ContractModel):
+    answer: str = ""
+    confidence: float = Field(ge=0, le=1)
+    evidence_ids: list[str] = Field(default_factory=list)
+    status: Literal["answered", "uncertain"]
 
-@dataclass(frozen=True, slots=True)
-class TemporalEventResult(BaseModel):
-    event_id: str
-    candidate_id: str
 
-    start_ms: int
-    end_ms: int
+class TemporalEventResult(TimeRangeModel):
+    event_id: str = Field(min_length=1)
+    candidate_id: str = Field(min_length=1)
 
-@dataclass(frozen=True, slots=True)
-class TemporalSequence(BaseModel):
-    video_id: str
-    events: list[TemporalEventResult]
+
+class TemporalSequence(ContractModel):
+    video_id: str = Field(min_length=1)
+    events: list[TemporalEventResult] = Field(default_factory=list)
     sequence_score: float
 
-@dataclass(frozen=True, slots=True)
-class VerifiedResult(BaseModel):
-    status: str
-    confidence: float
-    supporting_evidence_ids: list[str]
-    failed_constraints: list[str]
+
+class VerifiedResult(ContractModel):
+    status: Literal["accepted", "rejected", "uncertain"]
+    confidence: float = Field(ge=0, le=1)
+    supporting_evidence_ids: list[str] = Field(default_factory=list)
+    failed_constraints: list[str] = Field(default_factory=list)
