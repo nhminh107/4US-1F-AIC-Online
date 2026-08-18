@@ -102,6 +102,10 @@ Planner và `event_id` bảo toàn ngữ cảnh TRAKE.
 `asr`, `caption`, `object_detection`, `object_track`. Field này mô tả entity
 được hit trỏ tới, khác với `source` là retriever đã tạo hit.
 
+`CandidateEvidence` giữ phần evidence đã được resolve trong candidate: source,
+entity type/ID, time range, rank, raw score và optional `tool_call_id`. Nó không
+giữ `video_id` hoặc `event_id` vì hai field này đã thuộc `CandidateRegion`.
+
 ### `CandidateRegion` và `RankedCandidateRegion`
 
 Aggregator chỉ gộp evidence overlap/gần nhau trong **cùng video và cùng event**

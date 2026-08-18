@@ -156,11 +156,13 @@ class SearchHit(CanonicalEntityRef):
     raw_score: float
 
 
-class CandidateEvidence(ContractModel):
+class CandidateEvidence(TimeRangeModel):
     source: str = Field(min_length=1)
+    entity_type: EntityType
     entity_id: str = Field(min_length=1)
     rank: int = Field(ge=1)
     raw_score: float
+    tool_call_id: str | None = None
 
 
 class CandidateRegion(TimeRangeModel):
