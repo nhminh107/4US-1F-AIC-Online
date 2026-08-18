@@ -112,6 +112,7 @@ class Event(ContractModel):
 class TemporalConstraint(ContractModel):
     before: str = Field(min_length=1)
     after: str = Field(min_length=1)
+    min_gap_ms: int | None = Field(default=None, ge=0)
     max_gap_ms: int | None = Field(default=None, gt=0)
     allow_overlap: bool = False
 
@@ -215,6 +216,8 @@ class VQAResult(ContractModel):
 class TemporalEventResult(TimeRangeModel):
     event_id: str = Field(min_length=1)
     candidate_id: str = Field(min_length=1)
+    fusion_score: float | None = None
+    evidence_ids: list[str] = Field(default_factory=list)
 
 
 class TemporalSequence(ContractModel):
