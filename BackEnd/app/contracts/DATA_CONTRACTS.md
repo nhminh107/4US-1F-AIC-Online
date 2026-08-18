@@ -98,6 +98,10 @@ granularity của retriever. `rank` bắt đầu từ 1, `raw_score` được gi
 retriever để Fusion chuẩn hóa theo source khi cần. `tool_call_id` liên kết với
 Planner và `event_id` bảo toàn ngữ cảnh TRAKE.
 
+`entity_type` chỉ nhận một trong: `video`, `frame`, `shot`, `clip`, `ocr`,
+`asr`, `caption`, `object_detection`, `object_track`. Field này mô tả entity
+được hit trỏ tới, khác với `source` là retriever đã tạo hit.
+
 ### `CandidateRegion` và `RankedCandidateRegion`
 
 Aggregator chỉ gộp evidence overlap/gần nhau trong **cùng video và cùng event**

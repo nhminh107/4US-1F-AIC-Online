@@ -17,6 +17,18 @@ from BackEnd.app.contracts.pipeline import (
     TranscriptSegmentResult,
 )
 
+EntityType = Literal[
+    "video",
+    "frame",
+    "shot",
+    "clip",
+    "ocr",
+    "asr",
+    "caption",
+    "object_detection",
+    "object_track",
+]
+
 
 class ContractModel(BaseModel):
     """Base configuration shared by contracts exchanged between modules."""
@@ -138,7 +150,7 @@ class SearchHit(CanonicalEntityRef):
     tool_call_id: str | None = None
     event_id: str | None = None
     source: str = Field(min_length=1)
-    entity_type: str = Field(min_length=1)
+    entity_type: EntityType
     entity_id: str = Field(min_length=1)
     rank: int = Field(ge=1)
     raw_score: float
