@@ -4,6 +4,11 @@ version='0.1.0'
 
 dependencies = [
     "pydantic",
-    "faiss",
-    "sqlalchemy"
+    "faiss-cpu",
+    "sqlalchemy",
+    "psycopg[binary]",
+    "numpy",
+    "sentence-transformers",
+    "pillow",
+    "python-dotenv",
 ]

@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any, TypeVar
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, or_, select
+from sqlalchemy import create_engine, func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -46,12 +46,15 @@ from BackEnd.app.Database.sql_models import (
 )
 
 from BackEnd.app.contracts.pipeline import (
+    ClipEmbeddingHit,
     ClipEmbeddingMapping,
     ClipWindowMetadata,
+    FrameEmbeddingHit,
     FrameEmbeddingMapping,
     FrameMetadata,
     ObjectTrackResult,
     OCRResult,
+    ShotEmbeddingHit,
     ShotEmbeddingMapping,
     ShotMetadata,
     TrackObservationResult,
@@ -702,6 +705,171 @@ class PostgreManager:
                 )
             ).all()
             return [shot_embedding_mapping_from_record(record) for record in records]
+
+    def get_frame_hits_by_faiss_ids(
+        self,
+        faiss_ids: list[int],
+        *,
+        index_version: int,
+        model_name: str,
+    ) -> list[FrameEmbeddingHit]:
+        """Resolve 1 lô ``faiss_id`` (kết quả thô từ ``frame.faiss``) thẳng
+        sang canonical reference (``video_id``/``shot_id``/``start_ms``/
+        ``end_ms``) của frame tương ứng, bằng đúng 1 câu query JOIN.
+
+        Dùng bởi Visual Retrieval Tools (Module 3.1) sau khi gọi
+        ``FaissIndexRegistry.search_frame_index()``. Không dùng
+        ``get_frame_embedding_mappings()`` ở đây vì hàm đó lọc theo
+        ``frame_id`` — thứ mà tại thời điểm này ta CHƯA biết, ta chỉ có
+        ``faiss_id`` thô trả về từ FAISS.
+        """
+
+        if not faiss_ids:
+            return []
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(
+                    FrameEmbeddingRecord.faiss_id,
+                    Frame.frame_id,
+                    Frame.video_id,
+                    Frame.shot_id,
+                    Frame.timestamp_ms,
+                )
+                .join(Frame, Frame.frame_id == FrameEmbeddingRecord.frame_id)
+                .where(
+                    FrameEmbeddingRecord.faiss_id.in_(faiss_ids),
+                    FrameEmbeddingRecord.index_version == index_version,
+                    FrameEmbeddingRecord.model_name == model_name,
+                )
+            ).all()
+            return [
+                FrameEmbeddingHit(
+                    faiss_id=row.faiss_id,
+                    frame_id=row.frame_id,
+                    video_id=row.video_id,
+                    shot_id=row.shot_id,
+                    start_ms=row.timestamp_ms,
+                    end_ms=row.timestamp_ms,
+                )
+                for row in rows
+            ]
+
+    def get_clip_hits_by_faiss_ids(
+        self,
+        faiss_ids: list[int],
+        *,
+        index_version: int,
+        model_name: str,
+    ) -> list[ClipEmbeddingHit]:
+        """Resolve 1 lô ``faiss_id`` trong ``clip.faiss`` sang canonical
+        reference của clip tương ứng bằng đúng 1 câu query JOIN qua
+        ``ClipWindow`` rồi ``Shot`` (``ClipWindow`` không lưu ``video_id``
+        trực tiếp nên bắt buộc phải JOIN thêm ``Shot``).
+        """
+
+        if not faiss_ids:
+            return []
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(
+                    ClipEmbeddingRecord.faiss_id,
+                    ClipWindow.clip_id,
+                    Shot.video_id,
+                    ClipWindow.shot_id,
+                    ClipWindow.start_ms,
+                    ClipWindow.end_ms,
+                )
+                .join(ClipWindow, ClipWindow.clip_id == ClipEmbeddingRecord.clip_id)
+                .join(Shot, Shot.shot_id == ClipWindow.shot_id)
+                .where(
+                    ClipEmbeddingRecord.faiss_id.in_(faiss_ids),
+                    ClipEmbeddingRecord.index_version == index_version,
+                    ClipEmbeddingRecord.model_name == model_name,
+                )
+            ).all()
+            return [
+                ClipEmbeddingHit(
+                    faiss_id=row.faiss_id,
+                    clip_id=row.clip_id,
+                    video_id=row.video_id,
+                    shot_id=row.shot_id,
+                    start_ms=row.start_ms,
+                    end_ms=row.end_ms,
+                )
+                for row in rows
+            ]
+
+    def get_shot_hits_by_faiss_ids(
+        self,
+        faiss_ids: list[int],
+        *,
+        index_version: int,
+        model_name: str,
+        model_version: str,
+        pooling_method: str,
+    ) -> list[ShotEmbeddingHit]:
+        """Resolve 1 lô ``faiss_id`` trong ``shot.faiss`` sang canonical
+        reference của shot tương ứng bằng đúng 1 câu query JOIN.
+        """
+
+        if not faiss_ids:
+            return []
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(
+                    ShotEmbeddingRecord.faiss_id,
+                    Shot.shot_id,
+                    Shot.video_id,
+                    Shot.start_ms,
+                    Shot.end_ms,
+                )
+                .join(Shot, Shot.shot_id == ShotEmbeddingRecord.shot_id)
+                .where(
+                    ShotEmbeddingRecord.faiss_id.in_(faiss_ids),
+                    ShotEmbeddingRecord.index_version == index_version,
+                    ShotEmbeddingRecord.model_name == model_name,
+                    ShotEmbeddingRecord.model_version == model_version,
+                    ShotEmbeddingRecord.pooling_method == pooling_method,
+                )
+            ).all()
+            return [
+                ShotEmbeddingHit(
+                    faiss_id=row.faiss_id,
+                    shot_id=row.shot_id,
+                    video_id=row.video_id,
+                    start_ms=row.start_ms,
+                    end_ms=row.end_ms,
+                )
+                for row in rows
+            ]
+
+    _EMBEDDING_RECORD_TABLES: dict[str, type[Base]] = {
+        "frame": FrameEmbeddingRecord,
+        "clip": ClipEmbeddingRecord,
+        "shot": ShotEmbeddingRecord,
+    }
+
+    def count_embedding_records(self, entity_type: str, index_version: int) -> int:
+        """Đếm số dòng embedding record theo loại entity + index_version.
+
+        Dùng cho script kiểm tra đồng bộ DB <-> FAISS
+        (``BackEnd/scripts/check_faiss_db_sync.py``): so ``ntotal`` của file
+        ``.faiss`` với số dòng tương ứng trong PostgreSQL trước khi cho phép
+        Visual Retrieval Tools đi vào dùng thật.
+        """
+
+        record_type = self._EMBEDDING_RECORD_TABLES.get(entity_type)
+        if record_type is None:
+            raise ValueError(
+                f"entity_type không hợp lệ: {entity_type!r}. "
+                f"Chỉ chấp nhận: {sorted(self._EMBEDDING_RECORD_TABLES)}."
+            )
+        with self.session_factory() as session:
+            return session.scalar(
+                select(func.count()).select_from(record_type).where(
+                    record_type.index_version == index_version
+                )
+            )
 
     def add_frame_embedding_records(
         self,
