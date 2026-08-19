@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any, TypeVar
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, or_, select
+from sqlalchemy import and_, case, create_engine, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
@@ -879,6 +879,10 @@ class PostgreManager:
         video_id: str,
         start_ms: int,
         end_ms: int,
+        *,
+        modalities: set[str] | None = None,
+        limits: dict[str, int] | None = None,
+        priority_evidence_ids: set[str] | None = None,
     ) -> list[list[Any]]:
         """Return metadata overlapping a video time range by modality.
 
@@ -890,107 +894,214 @@ class PostgreManager:
         if start_ms < 0 or end_ms < start_ms:
             raise ValueError("Time range must satisfy 0 <= start_ms <= end_ms.")
 
+        all_modalities = {
+            "shot",
+            "clip",
+            "frame",
+            "ocr",
+            "asr",
+            "caption",
+            "object",
+            "track",
+        }
+        requested = set(modalities) if modalities is not None else all_modalities
+        unknown_modalities = requested - all_modalities
+        if unknown_modalities:
+            raise ValueError(f"Unsupported evidence modalities: {sorted(unknown_modalities)}")
+        resolved_limits = dict(limits or {})
+        if any(key not in all_modalities for key in resolved_limits):
+            raise ValueError("Evidence limits contain an unsupported modality.")
+        if any(value < 0 for value in resolved_limits.values()):
+            raise ValueError("Evidence limits must be non-negative.")
+        priority_ids = set(priority_evidence_ids or ())
+
         with self.session_factory() as session:
             if session.get(Video, video_id) is None:
                 raise ValueError(f"Video '{video_id}' does not exist.")
 
-            shots = session.scalars(
-                select(Shot)
-                .where(
-                    Shot.video_id == video_id,
-                    Shot.start_ms <= end_ms,
-                    Shot.end_ms >= start_ms,
-                )
-                .order_by(Shot.start_ms, Shot.shot_index)
-            ).all()
+            def load_rows(
+                statement,
+                modality: str,
+                order_columns: tuple[Any, ...],
+                priority_condition=None,
+            ) -> list[Any]:
+                if priority_condition is not None:
+                    statement = statement.order_by(
+                        case((priority_condition, 0), else_=1),
+                        *order_columns,
+                    )
+                else:
+                    statement = statement.order_by(*order_columns)
+                limit = resolved_limits.get(modality)
+                if limit is not None:
+                    statement = statement.limit(limit)
+                return list(session.scalars(statement).all())
 
-            clips = session.scalars(
-                select(ClipWindow)
-                .join(Shot)
-                .where(
-                    Shot.video_id == video_id,
-                    ClipWindow.start_ms <= end_ms,
-                    ClipWindow.end_ms >= start_ms,
+            need_shots = "shot" in requested
+            shots = (
+                load_rows(
+                    select(Shot).where(
+                        Shot.video_id == video_id,
+                        Shot.start_ms <= end_ms,
+                        Shot.end_ms >= start_ms,
+                    ),
+                    "shot",
+                    (Shot.start_ms, Shot.shot_index),
                 )
-                .order_by(ClipWindow.start_ms, ClipWindow.clip_id)
-            ).all()
+                if need_shots
+                else []
+            )
 
-            frames = session.scalars(
-                select(Frame)
-                .where(
-                    Frame.video_id == video_id,
-                    Frame.timestamp_ms >= start_ms,
-                    Frame.timestamp_ms <= end_ms,
+            need_clips = "clip" in requested
+            clips = (
+                load_rows(
+                    select(ClipWindow).join(Shot).where(
+                        Shot.video_id == video_id,
+                        ClipWindow.start_ms <= end_ms,
+                        ClipWindow.end_ms >= start_ms,
+                    ),
+                    "clip",
+                    (ClipWindow.start_ms, ClipWindow.clip_id),
                 )
-                .order_by(Frame.timestamp_ms, Frame.frame_idx)
-            ).all()
+                if need_clips
+                else []
+            )
 
-            ocr_records = session.scalars(
-                select(OCR)
-                .join(Frame)
-                .where(
-                    Frame.video_id == video_id,
-                    Frame.timestamp_ms >= start_ms,
-                    Frame.timestamp_ms <= end_ms,
+            need_frames = "frame" in requested
+            frame_priority = Frame.frame_id.in_(priority_ids) if priority_ids else None
+            frames = (
+                load_rows(
+                    select(Frame).where(
+                        Frame.video_id == video_id,
+                        Frame.timestamp_ms >= start_ms,
+                        Frame.timestamp_ms <= end_ms,
+                    ),
+                    "frame",
+                    (Frame.timestamp_ms, Frame.frame_idx),
+                    frame_priority,
                 )
-                .order_by(Frame.timestamp_ms, OCR.n)
-            ).all()
+                if need_frames
+                else []
+            )
 
-            transcript_segments = session.scalars(
-                select(TranscriptSegment)
-                .where(
-                    TranscriptSegment.video_id == video_id,
-                    TranscriptSegment.start_ms <= end_ms,
-                    TranscriptSegment.end_ms >= start_ms,
+            ocr_pairs = _priority_ocr_pairs(priority_ids)
+            ocr_priority = (
+                or_(*(and_(OCR.frame_id == frame_id, OCR.n == n) for frame_id, n in ocr_pairs))
+                if ocr_pairs
+                else None
+            )
+            ocr_records = (
+                load_rows(
+                    select(OCR).join(Frame).where(
+                        Frame.video_id == video_id,
+                        Frame.timestamp_ms >= start_ms,
+                        Frame.timestamp_ms <= end_ms,
+                    ),
+                    "ocr",
+                    (Frame.timestamp_ms, OCR.n),
+                    ocr_priority,
                 )
-                .order_by(TranscriptSegment.start_ms, TranscriptSegment.segment_id)
-            ).all()
+                if "ocr" in requested
+                else []
+            )
 
-            object_detections = session.scalars(
-                select(ObjectDetection)
-                .join(Frame)
-                .where(
-                    Frame.video_id == video_id,
-                    Frame.timestamp_ms >= start_ms,
-                    Frame.timestamp_ms <= end_ms,
+            asr_priority = (
+                TranscriptSegment.segment_id.in_(priority_ids) if priority_ids else None
+            )
+            transcript_segments = (
+                load_rows(
+                    select(TranscriptSegment).where(
+                        TranscriptSegment.video_id == video_id,
+                        TranscriptSegment.start_ms <= end_ms,
+                        TranscriptSegment.end_ms >= start_ms,
+                    ),
+                    "asr",
+                    (TranscriptSegment.start_ms, TranscriptSegment.segment_id),
+                    asr_priority,
                 )
-                .order_by(Frame.timestamp_ms, ObjectDetection.detection_id)
-            ).all()
+                if "asr" in requested
+                else []
+            )
 
-            object_tracks = session.scalars(
-                select(ObjectTrack)
-                .join(Shot)
-                .where(
-                    Shot.video_id == video_id,
-                    ObjectTrack.start_ms <= end_ms,
-                    ObjectTrack.end_ms >= start_ms,
+            object_ids = _priority_numeric_ids(priority_ids, "object-")
+            object_priority = (
+                ObjectDetection.detection_id.in_(object_ids) if object_ids else None
+            )
+            object_detections = (
+                load_rows(
+                    select(ObjectDetection).join(Frame).where(
+                        Frame.video_id == video_id,
+                        Frame.timestamp_ms >= start_ms,
+                        Frame.timestamp_ms <= end_ms,
+                    ),
+                    "object",
+                    (Frame.timestamp_ms, ObjectDetection.detection_id),
+                    object_priority,
                 )
-                .order_by(ObjectTrack.start_ms, ObjectTrack.track_id)
-            ).all()
+                if "object" in requested
+                else []
+            )
 
-            frame_ids = [frame.frame_id for frame in frames]
-            clip_ids = [clip.clip_id for clip in clips]
-            shot_ids = [shot.shot_id for shot in shots]
-            caption_conditions = []
-            if frame_ids:
-                caption_conditions.append(Caption.frame_id.in_(frame_ids))
-            if clip_ids:
-                caption_conditions.append(Caption.clip_id.in_(clip_ids))
-            if shot_ids:
-                caption_conditions.append(Caption.shot_id.in_(shot_ids))
+            track_ids = _priority_numeric_ids(priority_ids, "track-")
+            track_priority = ObjectTrack.track_id.in_(track_ids) if track_ids else None
+            object_tracks = (
+                load_rows(
+                    select(ObjectTrack).join(Shot).where(
+                        Shot.video_id == video_id,
+                        ObjectTrack.start_ms <= end_ms,
+                        ObjectTrack.end_ms >= start_ms,
+                    ),
+                    "track",
+                    (ObjectTrack.start_ms, ObjectTrack.track_id),
+                    track_priority,
+                )
+                if "track" in requested
+                else []
+            )
 
             captions = []
-            if caption_conditions:
-                captions = session.scalars(
-                    select(Caption)
-                    .where(or_(*caption_conditions))
-                    .order_by(Caption.caption_id)
-                ).all()
+            if "caption" in requested:
+                caption_ids = _priority_numeric_ids(priority_ids, "caption-")
+                caption_priority = Caption.caption_id.in_(caption_ids) if caption_ids else None
+                captions = load_rows(
+                    select(Caption).where(
+                        or_(
+                            Caption.frame_id.in_(
+                                select(Frame.frame_id).where(
+                                    Frame.video_id == video_id,
+                                    Frame.timestamp_ms >= start_ms,
+                                    Frame.timestamp_ms <= end_ms,
+                                )
+                            ),
+                            Caption.clip_id.in_(
+                                select(ClipWindow.clip_id).join(Shot).where(
+                                    Shot.video_id == video_id,
+                                    ClipWindow.start_ms <= end_ms,
+                                    ClipWindow.end_ms >= start_ms,
+                                )
+                            ),
+                            Caption.shot_id.in_(
+                                select(Shot.shot_id).where(
+                                    Shot.video_id == video_id,
+                                    Shot.start_ms <= end_ms,
+                                    Shot.end_ms >= start_ms,
+                                )
+                            ),
+                        )
+                    ),
+                    "caption",
+                    (Caption.caption_id,),
+                    caption_priority,
+                )
 
         return [
-            [shot_metadata_from_shot(shot) for shot in shots],
-            [clip_window_metadata_from_clip_window(clip) for clip in clips],
-            [frame_metadata_from_frame(frame) for frame in frames],
+            [shot_metadata_from_shot(shot) for shot in shots] if "shot" in requested else [],
+            [clip_window_metadata_from_clip_window(clip) for clip in clips]
+            if "clip" in requested
+            else [],
+            [frame_metadata_from_frame(frame) for frame in frames]
+            if "frame" in requested
+            else [],
             [ocr_result_from_ocr(ocr) for ocr in ocr_records],
             [
                 transcript_segment_result_from_segment(segment)
@@ -1003,3 +1114,26 @@ class PostgreManager:
             ],
             [object_track_result_from_object_track(track) for track in object_tracks],
         ]
+
+
+def _priority_numeric_ids(evidence_ids: set[str], prefix: str) -> set[int]:
+    numeric_ids: set[int] = set()
+    for evidence_id in evidence_ids:
+        if not evidence_id.startswith(prefix):
+            continue
+        value = evidence_id[len(prefix) :]
+        if value.isdigit():
+            numeric_ids.add(int(value))
+    return numeric_ids
+
+
+def _priority_ocr_pairs(evidence_ids: set[str]) -> set[tuple[str, int]]:
+    pairs: set[tuple[str, int]] = set()
+    for evidence_id in evidence_ids:
+        if not evidence_id.startswith("ocr-"):
+            continue
+        target = evidence_id[4:]
+        frame_id, separator, n = target.rpartition("-")
+        if separator and frame_id and n.isdigit():
+            pairs.add((frame_id, int(n)))
+    return pairs
