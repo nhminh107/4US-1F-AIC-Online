@@ -63,7 +63,7 @@ class FusionRanking():
     def __region_scoring(self, candidate_region: CandidateRegion, weight_buff: dict): 
         score = 0.0
         for candidate in candidate_region.evidence:
-            candidate_score = self.weight_mapping[candidate.entity_type] + weight_buff[candidate.entity_type]/ (RRF_K + candidate.rank)
+            candidate_score = (self.weight_mapping[candidate.entity_type] + weight_buff[candidate.entity_type])/ (RRF_K + candidate.rank)
             score += candidate_score
 
         return score
