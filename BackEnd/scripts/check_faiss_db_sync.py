@@ -23,10 +23,12 @@ import faiss
 from BackEnd.app.Database.postgre_manager import PostgreManager
 
 # (tên file .faiss, entity_type tương ứng, index_version cần kiểm tra)
+# index_version=0 khớp dữ liệu thật hiện có (Markdown_Doc/aic_hcmc_full.sql):
+# cả 3 bảng *EmbeddingRecord đều dùng index_version=0, không phải 1.
 _CHECKS: list[tuple[str, str, int]] = [
-    ("frame.faiss", "frame", 1),
-    ("clip.faiss", "clip", 1),
-    ("shot.faiss", "shot", 1),
+    ("frame.faiss", "frame", 0),
+    ("clip.faiss", "clip", 0),
+    ("shot.faiss", "shot", 0),
 ]
 
 

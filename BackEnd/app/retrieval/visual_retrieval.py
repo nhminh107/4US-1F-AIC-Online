@@ -246,12 +246,22 @@ class VisualSearchConfig:
     factory method dựng sẵn thay vì 1 default dùng chung — tránh nhầm lẫn
     khi Fast Path lỡ dùng cấu hình cho phép top_k=500 (quá nặng cho path
     cần trả kết quả nhanh).
+
+    ``index_version``/``model_version`` mặc định lấy đúng giá trị đang có
+    trong dump dữ liệu thật (``Markdown_Doc/aic_hcmc_full.sql``): cả 3 bảng
+    ``*EmbeddingRecord`` đều dùng ``index_version=0`` (KHÔNG phải 1 —
+    ``module_visual_retrieval_tools.md`` §0 ghi "index_version = 1" là số
+    giả định lúc thiết kế, chưa đối chiếu dữ liệu thật), và
+    ``ShotEmbeddingRecord.model_version`` là chuỗi ``"0"`` (không phải
+    ``"v1"``). Dùng sai 2 giá trị này khiến MỌI hit đều không resolve được
+    (âm thầm bị bỏ qua ở ``_log_unresolved``, không raise lỗi nào) — xem
+    ``module_visual_retrieval_tools_implementation.md`` §7.
     """
 
     model_name: str = "clip-ViT-B-32"
-    model_version: str = "v1"
+    model_version: str = "0"
     pooling_method: str = "mean"
-    index_version: int = 1
+    index_version: int = 0
     default_top_k: int = 50
     max_top_k: int = 100
 
