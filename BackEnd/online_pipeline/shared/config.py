@@ -1,5 +1,9 @@
-from dataclasses import dataclass
+from pydantic_settings import BaseSettings
 
+FPT_SYSTEM_PROMPT = (
+    "Respond only with valid JSON. Do not include reasoning, thinking blocks, "
+    "or any text outside the JSON object."
+)
 
 TOOL_TIMEOUTS: dict[str, float] = {
     "clip_search": 2.0,
@@ -20,14 +24,31 @@ TOP_K_DEFAULTS: dict[str, int] = {
 }
 
 
-@dataclass(frozen=True)
-class LLMConfig:
-    model_name: str = "gpt-4o"
+class LLMConfig(BaseSettings):
+    api_key: str
+    base_url: str
+
+    # Text reasoning — Intent Extractor, Query Planner
+    llm_model: str = "Qwen3.6-27B"
+
+    # Vision-language — VQA, Verifier (module của teammate)
+    vlm_model: str = "Qwen2.5-VL-7B-Instruct"
+
     max_retries: int = 3
     temperature: float = 0.0
+    fpt_system_prompt: str = FPT_SYSTEM_PROMPT
 
+    class Config:
+        env_prefix = "FPT_"
+        env_file = ".env"
 
 LLM_CONFIG = LLMConfig()
 
 
-__all__ = ["LLMConfig", "LLM_CONFIG", "TOP_K_DEFAULTS", "TOOL_TIMEOUTS"]
+__all__ = [
+    "FPT_SYSTEM_PROMPT",
+    "LLMConfig",
+    "LLM_CONFIG",
+    "TOP_K_DEFAULTS",
+    "TOOL_TIMEOUTS",
+]
