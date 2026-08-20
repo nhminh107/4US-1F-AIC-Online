@@ -14,7 +14,9 @@ cần (duck typing) - tương ứng các test case "Unit (no GPU)" ở mục 9
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -25,9 +27,12 @@ from BackEnd.app.contracts.pipeline import (
     ShotEmbeddingHit,
 )
 from BackEnd.app.retrieval.visual_retrieval import (
+    DEFAULT_FAISS_INDEX_MODEL_NAME,
+    DEFAULT_TEXT_EMBEDDING_MODEL_NAME,
     FaissIndexRegistry,
     VisualRetrievalTools,
     VisualSearchConfig,
+    build_default_visual_retrieval_tools,
 )
 
 
@@ -236,6 +241,33 @@ def test_image_ref_missing_in_db_raises_value_error():
         raise AssertionError("Expected ValueError when image_ref does not resolve in DB.")
 
 
+def test_default_wiring_separates_text_embedding_and_faiss_index_models():
+    registry = FakeRegistry()
+    db_mng = FakeDbManager()
+    fake_embedder = FakeEmbedder()
+    environment = {
+        "TEXT_EMBEDDING_MODEL_NAME": DEFAULT_TEXT_EMBEDDING_MODEL_NAME,
+        "FAISS_INDEX_MODEL_NAME": DEFAULT_FAISS_INDEX_MODEL_NAME,
+        "CLIP_MODEL_DEVICE": "cpu",
+    }
+    with (
+        patch.dict(os.environ, environment, clear=False),
+        patch.object(FaissIndexRegistry, "get_instance", return_value=registry),
+        patch(
+            "BackEnd.app.retrieval.visual_retrieval.ClipEmbedder",
+            return_value=fake_embedder,
+        ) as embedder_class,
+    ):
+        tools = build_default_visual_retrieval_tools(db_mng=db_mng)  # type: ignore[arg-type]
+
+    embedder_class.assert_called_once_with(
+        model_name=DEFAULT_TEXT_EMBEDDING_MODEL_NAME,
+        image_model_name=DEFAULT_FAISS_INDEX_MODEL_NAME,
+        device="cpu",
+    )
+    assert tools.config.model_name == DEFAULT_FAISS_INDEX_MODEL_NAME
+
+
 # ---------------------------------------------------------------------------
 # _raw_search: test truc tiep FaissIndexRegistry._raw_search bang 1 "index"
 # gia lap (duck-typed) co method .search(), khong can cai dat thu vien faiss
@@ -284,6 +316,7 @@ _ALL_TESTS = [
     test_shot_search_uses_shot_source_and_entity_type,
     test_image_similarity_search_is_alias_of_frame_search_image_ref,
     test_image_ref_missing_in_db_raises_value_error,
+    test_default_wiring_separates_text_embedding_and_faiss_index_models,
     test_raw_search_filters_out_negative_one_ids,
     test_raw_search_casts_float64_vector_to_float32,
 ]
