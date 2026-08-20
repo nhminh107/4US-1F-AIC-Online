@@ -1,0 +1,14 @@
+[project]
+name='4US-1F-AIC-RETRIEVAL-ONLINE'
+version='0.1.0'
+
+dependencies = [
+    "pydantic",
+    "faiss-cpu",
+    "sqlalchemy",
+    "psycopg[binary]",
+    "numpy",
+    "sentence-transformers",
+    "pillow",
+    "python-dotenv",
+]
