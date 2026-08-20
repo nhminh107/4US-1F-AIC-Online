@@ -36,8 +36,9 @@ class FakeResult:
 
 
 class FakeSession:
-    def __init__(self, rows):
+    def __init__(self, rows, classes=("Person", "Man", "Woman", "Car")):
         self.rows = rows
+        self.classes = classes
 
     def __enter__(self):
         return self
@@ -47,6 +48,9 @@ class FakeSession:
 
     def execute(self, _statement):
         return FakeResult(self.rows)
+
+    def scalars(self, _statement):
+        return FakeResult(self.classes)
 
 
 def test_ocr_search_returns_shared_search_hit():
@@ -76,3 +80,20 @@ def test_track_search_preserves_event_and_canonical_range():
     assert hits[0].event_id == "E1"
     assert hits[0].start_ms == 1000
     assert hits[0].end_ms == 3000
+
+
+def test_person_aliases_cover_btc_gender_labels():
+    tools = ObjectTrackingRetrievalTools(lambda: FakeSession([]))
+    with tools.session_factory() as session:
+        resolved = tools._resolve_object_classes(session, "person")
+    assert resolved == ("Person", "Man", "Woman")
+
+
+def test_unknown_llm_object_class_fails_closed():
+    tools = ObjectTrackingRetrievalTools(lambda: FakeSession([]))
+    try:
+        tools.track_search("imaginary picnic family object")
+    except ValueError as error:
+        assert "Unsupported object class" in str(error)
+    else:
+        raise AssertionError("Unknown planner class must not reach the DB query")

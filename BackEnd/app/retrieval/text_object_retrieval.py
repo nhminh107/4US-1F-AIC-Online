@@ -130,6 +130,12 @@ class ObjectTrackingRetrievalTools:
     def __init__(self, session_factory: Callable[[], Session]) -> None:
         self.session_factory = session_factory
 
+    def supported_object_classes(self) -> tuple[str, ...]:
+        """Return the database-backed allow-list for the query planner."""
+
+        with self.session_factory() as session:
+            return tuple(sorted(session.scalars(select(ClassID.class_name)).all()))
+
     def object_search(
         self,
         object_class: str,
@@ -143,15 +149,16 @@ class ObjectTrackingRetrievalTools:
         self._validate_filters(object_class, top_k, min_confidence)
         if min_count <= 0:
             raise ValueError("min_count must be positive")
-        statement = (
-            select(ObjectDetection, Frame, ClassID)
-            .join(Frame, ObjectDetection.frame_id == Frame.frame_id)
-            .join(ClassID, ObjectDetection.class_id == ClassID.class_id)
-            .where(ClassID.class_name.ilike(object_class))
-            .where(ObjectDetection.confidence >= min_confidence)
-            .order_by(ObjectDetection.confidence.desc())
-        )
         with self.session_factory() as session:
+            resolved_classes = self._resolve_object_classes(session, object_class)
+            statement = (
+                select(ObjectDetection, Frame, ClassID)
+                .join(Frame, ObjectDetection.frame_id == Frame.frame_id)
+                .join(ClassID, ObjectDetection.class_id == ClassID.class_id)
+                .where(ClassID.class_name.in_(resolved_classes))
+                .where(ObjectDetection.confidence >= min_confidence)
+                .order_by(ObjectDetection.confidence.desc())
+            )
             rows = session.execute(statement).all()
 
         grouped: dict[tuple[str, str | None, int], list[tuple[Any, Any, Any]]] = {}
@@ -192,17 +199,18 @@ class ObjectTrackingRetrievalTools:
         self._validate_filters(object_class, top_k, min_confidence)
         if min_duration_ms < 0:
             raise ValueError("min_duration_ms must be non-negative")
-        statement = (
-            select(ObjectTrack, Shot, ClassID)
-            .join(Shot, ObjectTrack.shot_id == Shot.shot_id)
-            .join(ClassID, ObjectTrack.class_id == ClassID.class_id)
-            .where(ClassID.class_name.ilike(object_class))
-            .where(ObjectTrack.avg_confidence >= min_confidence)
-            .where(ObjectTrack.end_ms - ObjectTrack.start_ms >= min_duration_ms)
-            .order_by(ObjectTrack.avg_confidence.desc())
-            .limit(top_k)
-        )
         with self.session_factory() as session:
+            resolved_classes = self._resolve_object_classes(session, object_class)
+            statement = (
+                select(ObjectTrack, Shot, ClassID)
+                .join(Shot, ObjectTrack.shot_id == Shot.shot_id)
+                .join(ClassID, ObjectTrack.class_id == ClassID.class_id)
+                .where(ClassID.class_name.in_(resolved_classes))
+                .where(ObjectTrack.avg_confidence >= min_confidence)
+                .where(ObjectTrack.end_ms - ObjectTrack.start_ms >= min_duration_ms)
+                .order_by(ObjectTrack.avg_confidence.desc())
+                .limit(top_k)
+            )
             rows = session.execute(statement).all()
         return [
             SearchHit(
@@ -229,6 +237,32 @@ class ObjectTrackingRetrievalTools:
             raise ValueError("top_k must be positive")
         if not 0.0 <= confidence <= 1.0:
             raise ValueError("min_confidence must be within [0, 1]")
+
+    @staticmethod
+    def _resolve_object_classes(
+        session: Session,
+        requested_class: str,
+    ) -> tuple[str, ...]:
+        """Resolve planner output against real DB classes and person aliases."""
+
+        available = tuple(session.scalars(select(ClassID.class_name)).all())
+        by_normalized = {name.casefold(): name for name in available}
+        normalized = requested_class.strip().casefold()
+        person_queries = {"person", "people", "human", "người", "nguoi"}
+        person_labels = {"person", "man", "woman", "boy", "girl", "human"}
+        if normalized in person_queries:
+            resolved = tuple(
+                name for name in available if name.casefold() in person_labels
+            )
+        else:
+            direct = by_normalized.get(normalized)
+            resolved = (direct,) if direct is not None else ()
+        if not resolved:
+            raise ValueError(
+                f"Unsupported object class {requested_class!r}. "
+                "Use supported_object_classes() to constrain planner output."
+            )
+        return resolved
 
 
 __all__ = [
