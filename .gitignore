@@ -128,6 +128,10 @@ data/indexes/
 *.index
 *.bin
 
+# BackEnd/data/faiss - FAISS index + con tro id (.faiss va .json) chay thu
+# cuc bo (branch KIS), khong push len git du *.faiss da khop o tren.
+BackEnd/data/faiss/
+
 # =========================================================
 # Milvus local data
 # =========================================================
@@ -228,6 +232,15 @@ config/local.json
 # Personal markdown docs (not pushed)
 # =========================================================
 Markdown_Doc/
+
+# =========================================================
+# =========================================================
+# Module 3.1 - Visual Retrieval Tools: FAISS index binaries
+# (build tu Offline Pipeline, khong commit git - xem
+# Markdown_Doc/module_visual_retrieval_tools.md muc 8)
+# =========================================================
+BackEnd/data/faiss/*.faiss
+BackEnd/data/faiss/*.json
 
 # =========================================================
 # Local test data for OCR
