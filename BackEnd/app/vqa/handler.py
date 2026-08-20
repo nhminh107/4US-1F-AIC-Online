@@ -1,4 +1,4 @@
-"""Grounded VQA handling over ranked online-pipeline evidence."""
+"""Prepare ranked visual evidence for a human VQA reviewer."""
 
 from __future__ import annotations
 
@@ -9,19 +9,23 @@ from typing import Protocol
 
 from BackEnd.app.contracts.models import (
     EvidenceBundle,
+    KISResult,
     RankedCandidateRegion,
     StructuredQuery,
-    VQAResult,
 )
 
 
 @dataclass(frozen=True, slots=True)
 class VQAModelAnswer:
+    """Compatibility contract for the optional, inactive FPT VLM client."""
+
     answer: str
     confidence: float
 
 
 class VQAModelClient(Protocol):
+    """Compatibility protocol for a future automated VQA implementation."""
+
     def answer(
         self,
         *,
@@ -35,12 +39,16 @@ EvidenceLoader = Callable[[str, int, int], EvidenceBundle]
 
 
 class VQAHandler:
-    """Select bounded evidence, call a VLM, and return the shared VQAResult."""
+    """Return KIS-style visual candidates for a human to answer a VQA question.
 
-    def __init__(self, client: VQAModelClient, *, max_candidates: int = 5) -> None:
+    Retrieval and fusion have already used ``StructuredQuery.question`` to rank
+    regions. This handler deliberately does not answer the question or invoke a
+    VLM: it selects representative frames that a human reviewer can inspect.
+    """
+
+    def __init__(self, *, max_candidates: int = 5) -> None:
         if max_candidates <= 0:
             raise ValueError("max_candidates must be positive")
-        self.client = client
         self.max_candidates = max_candidates
 
     def handle(
@@ -48,82 +56,68 @@ class VQAHandler:
         query: StructuredQuery,
         candidates: Sequence[RankedCandidateRegion],
         evidence_loader: EvidenceLoader,
-    ) -> VQAResult:
+    ) -> list[KISResult]:
         if query.task != "VQA":
             raise ValueError("VQAHandler only accepts task='VQA'")
-        question = query.question.strip()
-        if not question:
+        if not query.question.strip():
             raise ValueError("VQA query must contain a question")
 
-        selected = sorted(candidates, key=lambda item: item.fusion_score, reverse=True)[
-            : self.max_candidates
-        ]
-        bundles = [
-            evidence_loader(item.video_id, item.start_ms, item.end_ms)
-            for item in selected
-        ]
-        image_paths = self._image_paths(bundles)
-        evidence_ids = self._evidence_ids(bundles)
-        if not image_paths:
-            return VQAResult(
-                answer="Insufficient visual evidence to answer the question.",
-                confidence=0.0,
-                evidence_ids=evidence_ids,
-                status="uncertain",
+        results: list[KISResult] = []
+        for candidate in self._ranked_eligible_candidates(candidates):
+            bundle = evidence_loader(
+                candidate.video_id,
+                candidate.start_ms,
+                candidate.end_ms,
             )
+            frame_id = self._representative_frame_id(candidate, bundle)
+            if frame_id is None:
+                continue
 
-        model_answer = self.client.answer(
-            question=question,
-            prompt=self._prompt(question, bundles),
-            image_paths=image_paths,
-        )
-        answer = model_answer.answer.strip()
-        confidence = min(max(float(model_answer.confidence), 0.0), 1.0)
-        return VQAResult(
-            answer=answer,
-            confidence=confidence,
-            evidence_ids=evidence_ids,
-            status="answered" if answer and confidence > 0.0 else "uncertain",
-        )
+            results.append(
+                KISResult(
+                    video_id=candidate.video_id,
+                    start_ms=candidate.start_ms,
+                    end_ms=candidate.end_ms,
+                    representative_frame_id=frame_id,
+                    score=candidate.fusion_score,
+                    evidence_ids=self._evidence_ids(candidate, frame_id),
+                )
+            )
+            if len(results) == self.max_candidates:
+                break
+        return results
 
     @staticmethod
-    def _image_paths(bundles: Sequence[EvidenceBundle]) -> list[Path]:
-        paths: list[Path] = []
-        seen: set[Path] = set()
-        for bundle in bundles:
-            for frame in bundle.frames:
-                if frame.frame_path is None:
-                    continue
-                path = Path(frame.frame_path)
-                if path in seen or not path.is_file():
-                    continue
-                seen.add(path)
-                paths.append(path)
-        return paths
+    def _ranked_eligible_candidates(
+        candidates: Sequence[RankedCandidateRegion],
+    ) -> list[RankedCandidateRegion]:
+        eligible = [
+            candidate
+            for candidate in candidates
+            if candidate.constraint_result.hard_constraints_passed
+            and candidate.constraint_result.negative_constraints_passed
+        ]
+        return sorted(eligible, key=lambda item: item.fusion_score, reverse=True)
 
     @staticmethod
-    def _evidence_ids(bundles: Sequence[EvidenceBundle]) -> list[str]:
-        identifiers: list[str] = []
-        for bundle in bundles:
-            identifiers.extend(frame.frame_id for frame in bundle.frames)
-            identifiers.extend(
-                str(caption.caption_id)
-                for caption in bundle.captions
-                if caption.caption_id is not None
-            )
+    def _representative_frame_id(
+        candidate: RankedCandidateRegion,
+        bundle: EvidenceBundle,
+    ) -> str | None:
+        if not bundle.frames:
+            return None
+
+        midpoint_ms = (candidate.start_ms + candidate.end_ms) / 2
+        return min(
+            bundle.frames,
+            key=lambda frame: (abs(frame.timestamp_ms - midpoint_ms), frame.frame_id),
+        ).frame_id
+
+    @staticmethod
+    def _evidence_ids(candidate: RankedCandidateRegion, frame_id: str) -> list[str]:
+        identifiers = [frame_id]
+        identifiers.extend(item.entity_id for item in candidate.evidence)
         return list(dict.fromkeys(identifiers))
-
-    @staticmethod
-    def _prompt(question: str, bundles: Sequence[EvidenceBundle]) -> str:
-        ranges = ", ".join(
-            f"{bundle.video_id}:{bundle.start_ms}-{bundle.end_ms}ms"
-            for bundle in bundles
-        )
-        return (
-            "Answer only from visible evidence in the supplied frames. "
-            "If evidence is insufficient, say so and do not speculate. "
-            f"Question: {question}\nCandidate ranges: {ranges}"
-        )
 
 
 __all__ = ["VQAHandler", "VQAModelAnswer", "VQAModelClient"]
