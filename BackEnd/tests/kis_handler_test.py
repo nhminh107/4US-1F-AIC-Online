@@ -78,7 +78,11 @@ class FakePostgreManager:
     # -- Cac phuong thuc that su duoc kis_handler.py / evidence_service.py goi --
 
     def get_evidence_by_video_id_and_time(
-        self, video_id: str, start_ms: int, end_ms: int
+        self,
+        video_id: str,
+        start_ms: int,
+        end_ms: int,
+        **_kwargs,
     ) -> list[list]:
         data = self._by_video.get(video_id, {"shots": [], "clips": [], "frames": []})
         shots = [s for s in data["shots"] if _overlaps(s.start_ms, s.end_ms, start_ms, end_ms)]

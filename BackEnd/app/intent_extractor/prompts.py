@@ -1,6 +1,7 @@
 import json
 
 from BackEnd.app.contracts.models import StructuredQuery
+from BackEnd.app.intent_extractor.object_classes import ALLOWED_OBJECT_CLASSES
 
 
 def extract_structured_query_prompt() -> str:
@@ -9,6 +10,8 @@ def extract_structured_query_prompt() -> str:
         ensure_ascii=False,
         indent=2,
     )
+
+    allowed_object_classes = ", ".join(ALLOWED_OBJECT_CLASSES)
 
     return f"""You extract a complete structured query for an online multimodal video
 retrieval pipeline in one response.
@@ -36,6 +39,15 @@ Feedback rules:
   retrieval fields. If it conflicts with the raw query, feedback takes precedence.
 - Preserve the feedback text exactly as one item in the feedback list when it is non-empty.
 - Put exclusions implied by feedback into negative_constraints when applicable.
+
+Object constraint rules:
+- object_constraints may contain only these exact English values:
+  {allowed_object_classes}
+- Translate Vietnamese object names to the matching English value above.
+- Do not put scenes, places, attributes, or actions such as city, street, building,
+  indoor, walking, or receiving into object_constraints. Keep them in visual_queries.
+- If an object is not in the allowed list, omit it from object_constraints and preserve
+  the concept in visual_queries.
 
 Raw user query:
 {{raw_query}}

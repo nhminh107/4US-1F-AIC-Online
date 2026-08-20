@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
 
 from BackEnd.app.contracts.models import SearchHit, StructuredQuery, ToolCall
 from BackEnd.app.query_planner.executor import execute_tool_calls
-from BackEnd.app.query_planner.planner import run_query_planner
+from BackEnd.app.query_planner.planner import _run_query_planner_sync
 from BackEnd.app.query_planner.schemas import PlannedToolCall
 
 
@@ -36,8 +36,7 @@ class _FakeClient:
     chat = _FakeChat()
 
 
-@pytest.mark.asyncio
-async def test_run_query_planner_returns_app_toolcall_contract():
+def test_run_query_planner_returns_app_toolcall_contract():
     query = StructuredQuery(
         query_id="q1",
         task="KIS",
@@ -45,7 +44,7 @@ async def test_run_query_planner_returns_app_toolcall_contract():
         ocr_constraints=["HCMC"],
     )
 
-    tool_calls = await run_query_planner(query, client=_FakeClient())
+    tool_calls = _run_query_planner_sync(query, client=_FakeClient())
 
     assert [call.tool_call_id for call in tool_calls] == ["tc_001", "tc_002"]
     assert [call.tool_name for call in tool_calls] == ["clip_search", "ocr_search"]
@@ -54,8 +53,7 @@ async def test_run_query_planner_returns_app_toolcall_contract():
     assert tool_calls[1].event_id == "event-1"
 
 
-@pytest.mark.asyncio
-async def test_execute_tool_calls_dispatches_and_preserves_call_context(monkeypatch):
+def test_execute_tool_calls_dispatches_and_preserves_call_context(monkeypatch):
     async def fake_clip_search(
         query: str,
         top_k: int,
@@ -81,17 +79,23 @@ async def test_execute_tool_calls_dispatches_and_preserves_call_context(monkeypa
 
     import BackEnd.app.retrieval_tools.visual as visual_tools
 
-    monkeypatch.setattr(visual_tools, "clip_search", fake_clip_search)
+    async def fake_warmup():
+        return None
 
-    hits = await execute_tool_calls(
-        [
-            ToolCall(
-                tool_call_id="tc_001",
-                tool_name="clip_search",
-                event_id="event-1",
-                parameters={"query": "red shirt", "top_k": 5},
-            )
-        ]
+    monkeypatch.setattr(visual_tools, "clip_search", fake_clip_search)
+    monkeypatch.setattr(visual_tools, "warmup_visual_retrieval_tools", fake_warmup)
+
+    hits = asyncio.run(
+        execute_tool_calls(
+            [
+                ToolCall(
+                    tool_call_id="tc_001",
+                    tool_name="clip_search",
+                    event_id="event-1",
+                    parameters={"query": "red shirt", "top_k": 5},
+                )
+            ]
+        )
     )
 
     assert len(hits) == 1

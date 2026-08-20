@@ -1033,6 +1033,36 @@ class PostgreManager:
 
             return frame_metadata_from_frame(data)
 
+    def get_nearest_official_frame(
+        self,
+        video_id: str,
+        timestamp_ms: int,
+        *,
+        require_image: bool = True,
+    ) -> FrameMetadata | None:
+        """Return the official frame nearest to a timestamp in one video.
+
+        API responses use this method when a retrieval result points to an
+        extracted frame. ``require_image`` keeps returned media URLs usable.
+        """
+
+        if timestamp_ms < 0:
+            raise ValueError("timestamp_ms must be non-negative.")
+
+        with self.session_factory() as session:
+            statement = select(Frame).where(
+                Frame.video_id == video_id,
+                Frame.source == "official",
+            )
+            if require_image:
+                statement = statement.where(Frame.frame_path.is_not(None))
+            statement = statement.order_by(
+                func.abs(Frame.timestamp_ms - timestamp_ms),
+                Frame.frame_idx,
+            ).limit(1)
+            frame = session.scalars(statement).first()
+            return frame_metadata_from_frame(frame) if frame is not None else None
+
     def get_frame_record_by_video_id(self, video_id: str) -> list[FrameMetadata]:
         """Return all frames belonging to a video, ordered by frame index."""
 

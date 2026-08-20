@@ -167,3 +167,32 @@ def test_extract_intent_supports_trake_with_events_and_temporal_constraints():
         ("E2", "E3"),
     ]
     assert len(client.chat.completions.calls) == 1
+
+
+def test_extract_intent_normalizes_and_limits_object_classes():
+    client = _FakeClient(
+        [
+            {
+                "query_id": "wrong_id",
+                "task": "KIS",
+                "visual_queries": ["xe buýt đi trong thành phố"],
+                "object_constraints": [
+                    "xe buýt",
+                    "đường phố",
+                    "tòa nhà",
+                    "Person",
+                ],
+            }
+        ]
+    )
+
+    result = extract_intent_sync(
+        "Tìm cho tôi khung cảnh xe buýt đi trong thành phố",
+        client=client,
+    )
+
+    assert result.object_constraints == ["bus", "person"]
+    prompt = client.chat.completions.calls[0]["messages"][1]["content"]
+    assert "object_constraints may contain only" in prompt
+    assert "bus" in prompt
+    assert "building" not in result.object_constraints

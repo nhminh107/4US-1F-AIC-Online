@@ -8,6 +8,7 @@ from typing import Any
 from BackEnd.CONFIG import LLM_CONFIG
 from BackEnd.app.contracts.models import StructuredQuery
 from BackEnd.app.intent_extractor.prompts import extract_structured_query_prompt
+from BackEnd.app.intent_extractor.object_classes import normalize_object_constraints
 from BackEnd.app.intent_extractor.utils import strip_thinking_blocks
 
 try:
@@ -148,6 +149,9 @@ def _normalize_structured_query(
     payload = structured_query.model_dump()
     payload["query_id"] = query_id
     payload["feedback"] = _normalize_feedback(feedback, structured_query.feedback)
+    payload["object_constraints"] = normalize_object_constraints(
+        structured_query.object_constraints
+    )
     return StructuredQuery.model_validate(payload)
 
 

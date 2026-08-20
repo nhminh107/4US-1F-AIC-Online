@@ -12,4 +12,6 @@ dependencies = [
     "pillow",
     "python-dotenv",
     "httpx",
+    "fastapi",
+    "uvicorn[standard]",
 ]

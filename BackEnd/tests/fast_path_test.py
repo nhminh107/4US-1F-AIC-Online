@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import pytest
+import asyncio
 
 from BackEnd.app.contracts.models import SearchHit, StructuredQuery
 from BackEnd.app.fast_path import runner
@@ -19,18 +19,20 @@ def _hit(source: str, entity_type: str, entity_id: str) -> SearchHit:
     )
 
 
-@pytest.mark.asyncio
-async def test_run_fast_path_uses_visual_ocr_and_asr_constraints(monkeypatch):
-    async def fake_clip_search(query: str):
+def test_run_fast_path_uses_visual_ocr_and_asr_constraints(monkeypatch):
+    async def fake_clip_search(query: str, top_k: int):
         assert query == "man red shirt"
+        assert top_k == 200
         return [_hit("clip_embedding", "clip", "clip-1")]
 
-    async def fake_ocr_search(query: str):
+    async def fake_ocr_search(query: str, top_k: int):
         assert query == "HCMC"
+        assert top_k == 100
         return [_hit("ocr_index", "ocr", "ocr-1")]
 
-    async def fake_asr_search(query: str):
+    async def fake_asr_search(query: str, top_k: int):
         assert query == "hello"
+        assert top_k == 100
         return [_hit("asr_index", "asr", "asr-1")]
 
     monkeypatch.setattr(runner, "clip_search", fake_clip_search)
@@ -45,17 +47,16 @@ async def test_run_fast_path_uses_visual_ocr_and_asr_constraints(monkeypatch):
         asr_constraints=["hello"],
     )
 
-    hits = await runner.run_fast_path(query)
+    hits = asyncio.run(runner.run_fast_path(query))
 
     assert [hit.entity_type for hit in hits] == ["clip", "ocr", "asr"]
 
 
-@pytest.mark.asyncio
-async def test_run_fast_path_skips_failed_tool(monkeypatch):
-    async def broken_clip_search(query: str):
+def test_run_fast_path_skips_failed_tool(monkeypatch):
+    async def broken_clip_search(query: str, top_k: int):
         raise RuntimeError("boom")
 
-    async def fake_ocr_search(query: str):
+    async def fake_ocr_search(query: str, top_k: int):
         return [_hit("ocr_index", "ocr", "ocr-1")]
 
     monkeypatch.setattr(runner, "clip_search", broken_clip_search)
@@ -68,6 +69,26 @@ async def test_run_fast_path_skips_failed_tool(monkeypatch):
         ocr_constraints=["HCMC"],
     )
 
-    hits = await runner.run_fast_path(query)
+    hits = asyncio.run(runner.run_fast_path(query))
 
     assert [hit.entity_id for hit in hits] == ["ocr-1"]
+
+
+def test_run_fast_path_applies_request_top_k(monkeypatch):
+    async def fake_clip_search(query: str, top_k: int):
+        assert query == "city bus"
+        assert top_k == 7
+        return [_hit("clip_embedding", "clip", "clip-1")]
+
+    monkeypatch.setattr(runner, "clip_search", fake_clip_search)
+    query = StructuredQuery(
+        query_id="q-top-k",
+        task="KIS",
+        visual_queries=["city bus"],
+    )
+
+    hits = asyncio.run(
+        runner.run_fast_path(query, top_k={"clip_search": 7})
+    )
+
+    assert len(hits) == 1
