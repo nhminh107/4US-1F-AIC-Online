@@ -54,6 +54,13 @@ object detection, track và caption.
 | `StructuredQuery` | Ý nghĩa truy vấn đã chuẩn hóa cho toàn pipeline. | Intent Extractor → Fast Path/Planner/Fusion/Handlers |
 | `ToolCall` | Một yêu cầu retrieval do Planner tạo. | Planner → Retrieval Tools |
 
+### `TemporalConstraint`
+
+`TemporalConstraint` mô tả quan hệ giữa hai event trong TRAKE. `min_gap_ms`
+và `max_gap_ms` đều optional: khi vắng mặt, TRAKE dùng cấu hình mặc định của
+aligner. `allow_overlap` chỉ nới overlap cho constraint đó; nếu không khai báo
+constraint cụ thể, aligner dùng overlap policy mặc định.
+
 ### `RawQuery`
 
 `text` là field tối thiểu. `query_id` và `session_id` có thể được UI hoặc service
@@ -148,7 +155,10 @@ EvidenceBundle đã đưa vào quá trình trả lời.
 
 TRAKE Aligner chọn các `TemporalEventResult` trong cùng `video_id`, bảo đảm thứ
 tự và gap theo `TemporalConstraint`. `sequence_score` đánh giá cả chuỗi, khác
-với `fusion_score` vốn chỉ đánh giá một candidate/event.
+với `fusion_score` vốn chỉ đánh giá một candidate/event. Mỗi
+`TemporalEventResult` giữ `candidate_id`, time range, optional `fusion_score`
+và `evidence_ids` được trích từ candidate đã chọn để Verifier/UI có thể resolve
+ngược về evidence upstream.
 
 ### `VerifiedResult`
 
