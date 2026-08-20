@@ -184,21 +184,31 @@ class _SearchIndexFn(Protocol):
 # ---------------------------------------------------------------------------
 
 
-class ClipEmbedder:
-    """Bọc model CLIP dùng để encode query. Model PHẢI khớp model đã dùng
-    lúc build FAISS index ở Offline Pipeline — mismatch sẽ cho kết quả
-    search vô nghĩa mà không có lỗi runtime nào báo hiệu (đây là lý do
-    ``VisualSearchConfig.model_name`` luôn phải đi kèm ``index_version`` khi
-    resolve, xem ``VisualRetrievalTools``).
+DEFAULT_TEXT_EMBEDDING_MODEL_NAME = "sentence-transformers/clip-ViT-B-32-multilingual-v1"
+DEFAULT_FAISS_INDEX_MODEL_NAME = "clip-ViT-B-32"
 
-    Dùng ``sentence-transformers`` vì checkpoint CLIP do BTC cung cấp
-    (``clip-ViT-B-32``) publish sẵn dưới dạng ``SentenceTransformer``.
+
+class ClipEmbedder:
+    """Encode text/image into the vector space of the existing CLIP FAISS indexes.
+
+    The multilingual text model is distilled into the original CLIP ViT-B/32
+    embedding space. Therefore Vietnamese text can query the existing image
+    indexes without rebuilding them. Image-to-image retrieval still uses the
+    original CLIP checkpoint because the multilingual checkpoint only provides
+    a text encoder.
     """
 
-    def __init__(self, model_name: str = "clip-ViT-B-32", device: str = "cpu") -> None:
+    def __init__(
+        self,
+        model_name: str = DEFAULT_TEXT_EMBEDDING_MODEL_NAME,
+        device: str = "cpu",
+        image_model_name: str = DEFAULT_FAISS_INDEX_MODEL_NAME,
+    ) -> None:
         self.model_name = model_name
+        self.image_model_name = image_model_name
         self.device = device
-        self._model = self._load_model(model_name, device)
+        self._text_model = self._load_model(model_name, device)
+        self._image_model = self._text_model if model_name == image_model_name else None
 
     def _load_model(self, model_name: str, device: str):
         try:
@@ -214,7 +224,7 @@ class ClipEmbedder:
     def encode_text(self, text: str) -> np.ndarray:
         """Trả về vector đã L2-normalize, dtype float32, shape (512,)."""
 
-        vector = self._model.encode(
+        vector = self._text_model.encode(
             text, convert_to_numpy=True, normalize_embeddings=True
         )
         return vector.astype(np.float32)
@@ -224,9 +234,11 @@ class ClipEmbedder:
 
         from PIL import Image
 
+        if self._image_model is None:
+            self._image_model = self._load_model(self.image_model_name, self.device)
         with Image.open(image_path) as raw_image:
             image = raw_image.convert("RGB")
-            vector = self._model.encode(
+            vector = self._image_model.encode(
                 image, convert_to_numpy=True, normalize_embeddings=True
             )
         return vector.astype(np.float32)
@@ -258,7 +270,9 @@ class VisualSearchConfig:
     ``module_visual_retrieval_tools_implementation.md`` §7.
     """
 
-    model_name: str = "clip-ViT-B-32"
+    # This identifies the model used when the existing FAISS index was built.
+    # It deliberately differs from the multilingual model used for text queries.
+    model_name: str = DEFAULT_FAISS_INDEX_MODEL_NAME
     model_version: str = "0"
     pooling_method: str = "mean"
     index_version: int = 0
@@ -549,20 +563,29 @@ def build_default_visual_retrieval_tools(
 ) -> VisualRetrievalTools:
     """Dựng 1 ``VisualRetrievalTools`` dùng singleton ``FaissIndexRegistry``
     và cấu hình đọc từ biến môi trường (``FAISS_INDEX_DIR``,
-    ``CLIP_MODEL_NAME``, ``CLIP_MODEL_DEVICE`` — xem ``.env.example``).
+    ``TEXT_EMBEDDING_MODEL_NAME``, ``FAISS_INDEX_MODEL_NAME``,
+    ``CLIP_MODEL_DEVICE`` — xem ``.env.example``).
 
     Gọi 1 lần lúc app khởi động (vd trong FastAPI ``lifespan``), không gọi
     lại trong mỗi request vì sẽ load lại model/index.
     """
 
+    faiss_index_model_name = os.getenv(
+        "FAISS_INDEX_MODEL_NAME",
+        os.getenv("CLIP_MODEL_NAME", DEFAULT_FAISS_INDEX_MODEL_NAME),
+    )
+    resolved_config = config or VisualSearchConfig(model_name=faiss_index_model_name)
     registry = FaissIndexRegistry.get_instance()
     embedder = ClipEmbedder(
-        model_name=os.getenv("CLIP_MODEL_NAME", "clip-ViT-B-32"),
+        model_name=os.getenv(
+            "TEXT_EMBEDDING_MODEL_NAME", DEFAULT_TEXT_EMBEDDING_MODEL_NAME
+        ),
         device=os.getenv("CLIP_MODEL_DEVICE", "cpu"),
+        image_model_name=faiss_index_model_name,
     )
     return VisualRetrievalTools(
         registry=registry,
         embedder=embedder,
         db_mng=db_mng or PostgreManager(),
-        config=config,
+        config=resolved_config,
     )

@@ -442,6 +442,72 @@ class PostgreManager:
             )
             return self._persist(session, observation)
 
+    def search_object_detections(
+        self,
+        object_class: str,
+    ) -> list[tuple[ObjectDetection, Frame]]:
+        """Return detections and canonical frame metadata for one object class.
+
+        ``object_class`` may be either the human-readable class name or the
+        database class ID. Ranking/grouping is intentionally left to the
+        retrieval tool because its ``min_count`` and ``top_k`` are query-time
+        concerns rather than persistence concerns.
+        """
+
+        normalized_class = object_class.strip().lower()
+        if not normalized_class:
+            return []
+
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(ObjectDetection, Frame)
+                .join(Frame, Frame.frame_id == ObjectDetection.frame_id)
+                .join(ClassID, ClassID.class_id == ObjectDetection.class_id)
+                .where(
+                    or_(
+                        func.lower(ClassID.class_name) == normalized_class,
+                        func.lower(ClassID.class_id) == normalized_class,
+                    )
+                )
+                .order_by(
+                    Frame.video_id,
+                    Frame.shot_id,
+                    Frame.timestamp_ms,
+                    ObjectDetection.detection_id,
+                )
+            ).all()
+        return [(detection, frame) for detection, frame in rows]
+
+    def search_object_tracks(
+        self,
+        object_class: str,
+    ) -> list[tuple[ObjectTrack, Shot]]:
+        """Return continuous tracks and canonical shot metadata for one class."""
+
+        normalized_class = object_class.strip().lower()
+        if not normalized_class:
+            return []
+
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(ObjectTrack, Shot)
+                .join(Shot, Shot.shot_id == ObjectTrack.shot_id)
+                .join(ClassID, ClassID.class_id == ObjectTrack.class_id)
+                .where(
+                    or_(
+                        func.lower(ClassID.class_name) == normalized_class,
+                        func.lower(ClassID.class_id) == normalized_class,
+                    )
+                )
+                .order_by(
+                    ObjectTrack.observation_count.desc(),
+                    ObjectTrack.avg_confidence.desc().nullslast(),
+                    ObjectTrack.start_ms,
+                    ObjectTrack.track_id,
+                )
+            ).all()
+        return [(track, shot) for track, shot in rows]
+
     def add_tracking_result(
         self,
         tracks: list[ObjectTrackResult],
