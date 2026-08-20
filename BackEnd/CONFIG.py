@@ -9,6 +9,11 @@ RANKING_MODEL = "gpt-oss-20b"
 STD_BUFF = 1.5
 DETECT_WEIGHT = 1.0
 
+# ==== Module 6A - KIS Handler ====
+TOP_N_KIS = 10
+KIS_EDGE_RATIO = 0.1
+KIS_NEIGHBOR_SHOT_COUNT = 1
+
 from pydantic_settings import BaseSettings
 
 FPT_SYSTEM_PROMPT = (
@@ -65,4 +70,7 @@ __all__ = [
     "LLM_CONFIG",
     "TOP_K_DEFAULTS",
     "TOOL_TIMEOUTS",
+    "TOP_N_KIS",
+    "KIS_EDGE_RATIO",
+    "KIS_NEIGHBOR_SHOT_COUNT",
 ]
