@@ -126,6 +126,22 @@ class FrameEmbeddingMapping:
 
 
 @dataclass(frozen=True, slots=True)
+class FrameEmbeddingHit:
+    """Kết quả resolve 1 faiss_id trong ``frame.faiss`` sang canonical
+    reference của frame tương ứng (JOIN sẵn với bảng ``Frame``, dùng cho
+    Visual Retrieval Tools — tránh phải query DB 2 lần: 1 lần lấy mapping,
+    1 lần lấy canonical ref cho từng hit).
+    """
+
+    faiss_id: int
+    frame_id: str
+    video_id: str
+    shot_id: str | None
+    start_ms: int
+    end_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class TranscriptSegmentResult:
     """An ASR transcript segment within a video."""
 
@@ -251,6 +267,21 @@ class ClipEmbeddingMapping:
 
 
 @dataclass(frozen=True, slots=True)
+class ClipEmbeddingHit:
+    """Kết quả resolve 1 faiss_id trong ``clip.faiss`` sang canonical
+    reference của clip tương ứng (JOIN sẵn ``ClipWindow`` + ``Shot`` để lấy
+    ``video_id``, vì ``ClipWindow`` không lưu trực tiếp ``video_id``).
+    """
+
+    faiss_id: int
+    clip_id: str
+    video_id: str
+    shot_id: str
+    start_ms: int
+    end_ms: int
+
+
+@dataclass(frozen=True, slots=True)
 class ShotEmbeddingMapping:
     """FAISS mapping for one pooled shot embedding."""
 
@@ -260,6 +291,19 @@ class ShotEmbeddingMapping:
     model_name: str
     model_version: str
     pooling_method: str = "mean"
+
+
+@dataclass(frozen=True, slots=True)
+class ShotEmbeddingHit:
+    """Kết quả resolve 1 faiss_id trong ``shot.faiss`` sang canonical
+    reference của shot tương ứng (JOIN sẵn với bảng ``Shot``).
+    """
+
+    faiss_id: int
+    shot_id: str
+    video_id: str
+    start_ms: int
+    end_ms: int
 
 
 @dataclass(frozen=True, slots=True)
