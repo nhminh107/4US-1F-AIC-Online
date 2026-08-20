@@ -37,7 +37,6 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "shot_search": "shot-level retrieval for scenes or coherent visual segments",
     "ocr_search": "retrieval over text detected inside video frames",
     "asr_search": "retrieval over spoken words and audio transcripts",
-    "caption_search": "retrieval over generated captions describing video content",
     "object_search": "retrieval for frames containing a named object or entity",
     "track_search": "retrieval for object tracks and movement across frames",
 }
@@ -114,9 +113,15 @@ def _parse_stripped_completion(error: Exception) -> list[ToolCall] | None:
 
 def _task_guidance(structured_query: StructuredQuery) -> str:
     if structured_query.task == "KIS":
-        guidance = [
-            "For KIS, prioritize clip_search for broad visual retrieval.",
-        ]
+        guidance: list[str] = []
+        if structured_query.visual_queries:
+            guidance.append("Prioritize clip_search for each visual query.")
+        elif not (
+            structured_query.ocr_constraints
+            or structured_query.asr_constraints
+            or structured_query.object_constraints
+        ):
+            guidance.append("Prioritize clip_search for broad visual retrieval.")
         if structured_query.ocr_constraints:
             guidance.append(
                 "Because ocr_constraints are present, prioritize ocr_search and use "
@@ -136,7 +141,6 @@ def _task_guidance(structured_query: StructuredQuery) -> str:
         return "\n".join(
             [
                 "- For VQA, prioritize clip_search to locate candidate visual regions.",
-                "- Also prioritize caption_search to find regions likely to contain the answer.",
                 "- Use ocr_search when the question or constraints require reading visible text.",
             ]
         )
@@ -183,6 +187,7 @@ General planning rules:
 - Match every parameters object to the selected tool's schema.
 - Set top_k according to expected recall and query specificity.
 - Use multiple tools only when they add a distinct retrieval signal.
+- Do not add clip_search, frame_search, or shot_search for an OCR-only query.
 - Preserve event_id only when it is present in the input.
 
 Structured query:

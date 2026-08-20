@@ -13,7 +13,7 @@ pydantic>=2.7.0
 pydantic-settings>=2.2.0
 
 # Elasticsearch async
-elasticsearch[async]>=8.13.0
+elasticsearch[async]>=8.13.0,<9
 
 # Database async
 sqlalchemy[asyncio]>=2.0.30

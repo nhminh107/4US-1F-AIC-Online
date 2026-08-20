@@ -7,11 +7,7 @@ from typing import Any
 
 from BackEnd.CONFIG import LLM_CONFIG
 from BackEnd.app.contracts.models import StructuredQuery
-from BackEnd.app.intent_extractor.prompts import (
-    classify_task_prompt,
-    extract_query_prompt,
-)
-from BackEnd.app.intent_extractor.schemas import TaskClassification
+from BackEnd.app.intent_extractor.prompts import extract_structured_query_prompt
 from BackEnd.app.intent_extractor.utils import strip_thinking_blocks
 
 try:
@@ -30,6 +26,7 @@ except ImportError:
 
 DEFAULT_MODEL = LLM_CONFIG.llm_model
 DEFAULT_MAX_RETRIES = LLM_CONFIG.max_retries
+SUPPORTED_TASKS = frozenset({"KIS", "VQA", "TRAKE"})
 
 logger = logging.getLogger(__name__)
 
@@ -58,17 +55,38 @@ def _stable_query_id(raw_text: str) -> str:
     return f"query_{digest}"
 
 
-def _render_prompt(prompt: str, raw_text: str, query_id: str) -> str:
-    return prompt.replace("{raw_query}", raw_text).replace("{query_id}", query_id)
+def _render_prompt(
+    prompt: str,
+    raw_text: str,
+    query_id: str,
+    feedback: str,
+) -> str:
+    return (
+        prompt.replace("{raw_query}", raw_text)
+        .replace("{query_id}", query_id)
+        .replace("{feedback}", feedback)
+    )
 
 
-def _coerce_raw_query(raw_query: Any) -> tuple[str, str]:
+def _normalize_feedback(*feedback_groups: list[str]) -> list[str]:
+    normalized: list[str] = []
+    for feedback_group in feedback_groups:
+        for item in feedback_group:
+            cleaned_item = item.strip()
+            if cleaned_item and cleaned_item not in normalized:
+                normalized.append(cleaned_item)
+    return normalized
+
+
+def _coerce_raw_query(raw_query: Any) -> tuple[str, str, list[str]]:
     if isinstance(raw_query, str):
-        return raw_query, _stable_query_id(raw_query)
+        return raw_query, _stable_query_id(raw_query), []
 
     raw_text = raw_query.text
     query_id = getattr(raw_query, "query_id", None) or _stable_query_id(raw_text)
-    return raw_text, query_id
+    raw_feedback = getattr(raw_query, "feedback", None)
+    feedback = _normalize_feedback([raw_feedback] if isinstance(raw_feedback, str) else [])
+    return raw_text, query_id, feedback
 
 
 def _with_fpt_system_prompt(messages: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -121,16 +139,23 @@ def _parse_stripped_completion(error: Exception, response_model: Any) -> Any | N
 def _normalize_structured_query(
     structured_query: StructuredQuery,
     *,
-    task: str,
     query_id: str,
+    feedback: list[str],
 ) -> StructuredQuery:
+    if structured_query.task not in SUPPORTED_TASKS:
+        raise ValueError(f"Unsupported task returned by intent extractor: {structured_query.task}")
+
     payload = structured_query.model_dump()
-    payload["task"] = task
     payload["query_id"] = query_id
+    payload["feedback"] = _normalize_feedback(feedback, structured_query.feedback)
     return StructuredQuery.model_validate(payload)
 
 
-def _fallback_to_kis(raw_text: str, query_id: str) -> StructuredQuery:
+def _fallback_to_kis(
+    raw_text: str,
+    query_id: str,
+    feedback: list[str],
+) -> StructuredQuery:
     logger.warning(
         "Intent extraction failed, using raw text fallback for raw_text=%r",
         raw_text,
@@ -140,6 +165,7 @@ def _fallback_to_kis(raw_text: str, query_id: str) -> StructuredQuery:
         query_id=query_id,
         task="KIS",
         visual_queries=[raw_text],
+        feedback=feedback,
     )
 
 
@@ -151,32 +177,8 @@ def extract_intent_sync(
     max_retries: int = DEFAULT_MAX_RETRIES,
     temperature: float = LLM_CONFIG.temperature,
 ) -> StructuredQuery:
-    raw_text, query_id = _coerce_raw_query(raw_query)
+    raw_text, query_id, feedback = _coerce_raw_query(raw_query)
     client = client or build_instructor_client()
-
-    try:
-        classification = client.chat.completions.create(
-            model=model,
-            response_model=TaskClassification,
-            messages=_with_fpt_system_prompt(
-                [
-                    {
-                        "role": "user",
-                        "content": _render_prompt(
-                            classify_task_prompt(),
-                            raw_text,
-                            query_id,
-                        ),
-                    }
-                ]
-            ),
-            max_retries=max_retries,
-            temperature=temperature,
-        )
-    except InstructorRetryException as error:
-        classification = _parse_stripped_completion(error, TaskClassification)
-        if classification is None:
-            return _fallback_to_kis(raw_text, query_id)
 
     try:
         structured_query = client.chat.completions.create(
@@ -187,9 +189,10 @@ def extract_intent_sync(
                     {
                         "role": "user",
                         "content": _render_prompt(
-                            extract_query_prompt(classification.task),
+                            extract_structured_query_prompt(),
                             raw_text,
                             query_id,
+                            "\n".join(feedback),
                         ),
                     }
                 ]
@@ -199,18 +202,24 @@ def extract_intent_sync(
         )
         return _normalize_structured_query(
             structured_query,
-            task=classification.task,
             query_id=query_id,
+            feedback=feedback,
         )
     except InstructorRetryException as error:
         parsed_query = _parse_stripped_completion(error, StructuredQuery)
         if parsed_query is not None:
-            return _normalize_structured_query(
-                parsed_query,
-                task=classification.task,
-                query_id=query_id,
-            )
-        return _fallback_to_kis(raw_text, query_id)
+            try:
+                return _normalize_structured_query(
+                    parsed_query,
+                    query_id=query_id,
+                    feedback=feedback,
+                )
+            except ValueError:
+                logger.warning("Intent extractor returned an unsupported task", exc_info=True)
+        return _fallback_to_kis(raw_text, query_id, feedback)
+    except ValueError:
+        logger.warning("Intent extractor returned an unsupported task", exc_info=True)
+        return _fallback_to_kis(raw_text, query_id, feedback)
 
 
 async def extract_intent(
@@ -235,6 +244,7 @@ __all__ = [
     "DEFAULT_MAX_RETRIES",
     "DEFAULT_MODEL",
     "InstructorRetryException",
+    "SUPPORTED_TASKS",
     "build_instructor_client",
     "extract_intent",
     "extract_intent_sync",

@@ -38,10 +38,6 @@ async def _dispatch_tool(call: ToolCall) -> list[SearchHit]:
             from BackEnd.app.retrieval_tools.text import asr_search
 
             return await asr_search(**parameters)
-        case "caption_search":
-            from BackEnd.app.retrieval_tools.text import caption_search
-
-            return await caption_search(**parameters)
         case "object_search":
             from BackEnd.app.retrieval_tools.object import object_search
 
@@ -73,6 +69,14 @@ def _with_event_and_tool_call(hit: SearchHit, call: ToolCall) -> SearchHit:
 async def execute_tool_calls(tool_calls: list[ToolCall]) -> list[SearchHit]:
     if not tool_calls:
         return []
+
+    if any(
+        call.tool_name in {"clip_search", "frame_search", "shot_search"}
+        for call in tool_calls
+    ):
+        from BackEnd.app.retrieval_tools.visual import warmup_visual_retrieval_tools
+
+        await warmup_visual_retrieval_tools()
 
     results = await asyncio.gather(
         *(_execute_with_timeout(call) for call in tool_calls),

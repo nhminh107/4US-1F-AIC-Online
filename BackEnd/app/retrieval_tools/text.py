@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Mapping
+from inspect import isawaitable
 from typing import Any
 
 from BackEnd.app.contracts.models import SearchHit
@@ -12,8 +13,10 @@ except ImportError:
     AsyncElasticsearch = None  # type: ignore[assignment,misc]
 
 
-_TEXT_FIELD = "text.keyword"
+_TEXT_FIELD = "content"
 _VECTOR_FIELD = "embedding"
+OCR_INDEX = "aic_hcm2026_text_ocr_active"
+ASR_INDEX = "aic_hcm2026_text_transcript_active"
 
 _es_client: Any | None = None
 _text_embedder: Callable[[str], list[float]] | None = None
@@ -27,6 +30,19 @@ def configure_text_search(
     global _es_client, _text_embedder
     _es_client = client
     _text_embedder = embedder
+
+
+async def close_text_search() -> None:
+    """Close the shared Elasticsearch client when an application is shutting down."""
+
+    global _es_client
+    client = _es_client
+    _es_client = None
+    close = getattr(client, "close", None)
+    if close is not None:
+        result = close()
+        if isawaitable(result):
+            await result
 
 
 def embed_text(query: str) -> list[float]:
@@ -57,6 +73,8 @@ def _build_query(
     query: str,
     mode: str,
     top_k: int,
+    *,
+    text_field: str = _TEXT_FIELD,
 ) -> dict[str, Any]:
     if mode == "similarity":
         return {
@@ -70,14 +88,14 @@ def _build_query(
         }
     if mode == "exact":
         return {
-            "query": {"term": {_TEXT_FIELD: query}},
+            "query": {"match_phrase": {text_field: query}},
             "size": top_k,
         }
     if mode == "fuzzy":
         return {
             "query": {
                 "match": {
-                    "text": {
+                    text_field: {
                         "query": query,
                         "fuzziness": "AUTO",
                     }
@@ -91,6 +109,9 @@ def _build_query(
 def _get_value(value: Mapping[str, Any] | Any, field: str) -> Any:
     if isinstance(value, Mapping):
         return value.get(field)
+    body = getattr(value, "body", None)
+    if isinstance(body, Mapping):
+        return body.get(field)
     return getattr(value, field, None)
 
 
@@ -106,6 +127,17 @@ def _response_hits(response: Mapping[str, Any] | Any) -> list[Any]:
     return _required_value(hits, "hits")
 
 
+def _source_time_range(source: Mapping[str, Any] | Any) -> tuple[int, int]:
+    timestamp_ms = _get_value(source, "timestamp_ms")
+    start_ms = _get_value(source, "start_ms")
+    end_ms = _get_value(source, "end_ms")
+    resolved_start_ms = start_ms if start_ms is not None else timestamp_ms
+    resolved_end_ms = end_ms if end_ms is not None else timestamp_ms
+    if resolved_start_ms is None or resolved_end_ms is None:
+        raise ValueError("Elasticsearch result has no usable timestamp fields")
+    return resolved_start_ms, resolved_end_ms
+
+
 async def _text_search(
     query: str,
     top_k: int,
@@ -115,22 +147,27 @@ async def _text_search(
     *,
     index_name: str,
     entity_type: str,
+    text_field: str = _TEXT_FIELD,
 ) -> list[SearchHit]:
     client = _require_client()
-    request = _build_query(query, mode, top_k)
+    request = _build_query(query, mode, top_k, text_field=text_field)
     response = await client.search(index=index_name, **request)
 
     results: list[SearchHit] = []
     for rank, hit in enumerate(_response_hits(response), start=1):
         source = _required_value(hit, "_source")
+        start_ms, end_ms = _source_time_range(source)
         results.append(
             SearchHit(
                 source=index_name,
                 entity_type=entity_type,
-                entity_id=_required_value(hit, "_id"),
+                entity_id=_get_value(source, "entity_id") or _required_value(hit, "_id"),
                 video_id=_required_value(source, "video_id"),
-                start_ms=_required_value(source, "start_ms"),
-                end_ms=_required_value(source, "end_ms"),
+                start_ms=start_ms,
+                end_ms=end_ms,
+                shot_id=_get_value(source, "shot_id"),
+                clip_id=_get_value(source, "clip_id"),
+                frame_id=_get_value(source, "frame_id"),
                 rank=rank,
                 raw_score=_required_value(hit, "_score"),
                 event_id=event_id,
@@ -143,7 +180,7 @@ async def _text_search(
 async def ocr_search(
     query: str,
     top_k: int = 100,
-    mode: str = "similarity",
+    mode: str = "fuzzy",
     event_id: str | None = None,
     tool_call_id: str | None = None,
 ) -> list[SearchHit]:
@@ -153,15 +190,16 @@ async def ocr_search(
         mode,
         event_id,
         tool_call_id,
-        index_name="ocr_index",
+        index_name=OCR_INDEX,
         entity_type="ocr",
+        text_field="content",
     )
 
 
 async def asr_search(
     query: str,
     top_k: int = 100,
-    mode: str = "similarity",
+    mode: str = "fuzzy",
     event_id: str | None = None,
     tool_call_id: str | None = None,
 ) -> list[SearchHit]:
@@ -171,8 +209,9 @@ async def asr_search(
         mode,
         event_id,
         tool_call_id,
-        index_name="asr_index",
+        index_name=ASR_INDEX,
         entity_type="asr",
+        text_field="content",
     )
 
 
@@ -196,8 +235,10 @@ async def caption_search(
 
 __all__ = [
     "AsyncElasticsearch",
+    "ASR_INDEX",
     "asr_search",
     "caption_search",
+    "close_text_search",
     "configure_text_search",
     "embed_text",
     "ocr_search",

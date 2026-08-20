@@ -1,18 +1,18 @@
 from __future__ import annotations
 
 from BackEnd.app.contracts.models import RawQuery, StructuredQuery
+from BackEnd.app.intent_extractor import extractor as extractor_module
 from BackEnd.app.intent_extractor.extractor import extract_intent_sync
-from BackEnd.app.intent_extractor.schemas import TaskClassification
 
 
 class _FakeCompletions:
     def __init__(self, responses):
         self._responses = list(responses)
+        self.calls = []
 
     def create(self, *, response_model, **kwargs):
+        self.calls.append({"response_model": response_model, **kwargs})
         payload = self._responses.pop(0)
-        if response_model is TaskClassification:
-            return TaskClassification.model_validate(payload)
         if response_model is StructuredQuery:
             return StructuredQuery.model_validate(payload)
         raise AssertionError(f"Unexpected response model: {response_model!r}")
@@ -32,7 +32,6 @@ def test_extract_intent_kis_uses_app_structured_query_contract():
     raw_query = RawQuery(text="Tìm cảnh người đàn ông áo đỏ đứng cạnh bảng HCMC")
     client = _FakeClient(
         [
-            {"task": "KIS"},
             {
                 "query_id": "wrong_id",
                 "task": "KIS",
@@ -49,6 +48,9 @@ def test_extract_intent_kis_uses_app_structured_query_contract():
     assert result.query_id.startswith("query_")
     assert result.visual_queries == ["người đàn ông áo đỏ đứng cạnh bảng HCMC"]
     assert result.ocr_constraints == ["HCMC"]
+    assert result.feedback == []
+    assert len(client.chat.completions.calls) == 1
+    assert client.chat.completions.calls[0]["response_model"] is StructuredQuery
 
 
 def test_extract_intent_vqa_preserves_question():
@@ -58,7 +60,6 @@ def test_extract_intent_vqa_preserves_question():
     )
     client = _FakeClient(
         [
-            {"task": "VQA"},
             {
                 "query_id": "wrong_id",
                 "task": "VQA",
@@ -75,3 +76,94 @@ def test_extract_intent_vqa_preserves_question():
     assert result.query_id == "q-vqa-001"
     assert result.question == "Người phụ nữ trong video đang làm gì?"
     assert result.visual_queries == ["người phụ nữ"]
+    assert len(client.chat.completions.calls) == 1
+
+
+def test_extract_intent_preserves_feedback_and_sends_it_to_the_llm():
+    feedback = "Áo màu xanh, không phải màu đỏ"
+    raw_query = RawQuery(
+        query_id="q-feedback-001",
+        text="Tìm người mặc áo đỏ",
+        feedback=feedback,
+    )
+    client = _FakeClient(
+        [
+            {
+                "query_id": "wrong_id",
+                "task": "KIS",
+                "visual_queries": ["người mặc áo xanh"],
+                "negative_constraints": ["áo đỏ"],
+                "feedback": [feedback],
+            }
+        ]
+    )
+
+    result = extract_intent_sync(raw_query, client=client)
+
+    assert result.query_id == "q-feedback-001"
+    assert result.visual_queries == ["người mặc áo xanh"]
+    assert result.negative_constraints == ["áo đỏ"]
+    assert result.feedback == [feedback]
+    prompt = client.chat.completions.calls[0]["messages"][1]["content"]
+    assert feedback in prompt
+
+
+def test_extract_intent_falls_back_to_kis_and_preserves_feedback_on_retry(
+    monkeypatch,
+):
+    class RetryError(Exception):
+        pass
+
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RetryError("LLM unavailable")
+
+    class FailingClient:
+        class chat:
+            completions = FailingCompletions()
+
+    monkeypatch.setattr(extractor_module, "InstructorRetryException", RetryError)
+    result = extract_intent_sync(
+        RawQuery(
+            text="Tìm người mặc áo đỏ",
+            feedback="Ưu tiên cảnh ở ngoài trời",
+        ),
+        client=FailingClient(),
+    )
+
+    assert result.task == "KIS"
+    assert result.visual_queries == ["Tìm người mặc áo đỏ"]
+    assert result.feedback == ["Ưu tiên cảnh ở ngoài trời"]
+
+
+def test_extract_intent_supports_trake_with_events_and_temporal_constraints():
+    client = _FakeClient(
+        [
+            {
+                "query_id": "wrong_id",
+                "task": "TRAKE",
+                "events": [
+                    {"event_id": "E1", "description": "người đàn ông bước lên sân khấu"},
+                    {"event_id": "E2", "description": "người đàn ông nhận huy chương"},
+                    {"event_id": "E3", "description": "người đàn ông khóc"},
+                ],
+                "temporal_constraints": [
+                    {"before": "E1", "after": "E2"},
+                    {"before": "E2", "after": "E3"},
+                ],
+            }
+        ]
+    )
+
+    result = extract_intent_sync(
+        "Tìm video người đàn ông bước lên sân khấu, nhận huy chương rồi khóc",
+        client=client,
+    )
+
+    assert result.task == "TRAKE"
+    assert [event.event_id for event in result.events] == ["E1", "E2", "E3"]
+    assert [(item.before, item.after) for item in result.temporal_constraints] == [
+        ("E1", "E2"),
+        ("E2", "E3"),
+    ]
+    assert len(client.chat.completions.calls) == 1

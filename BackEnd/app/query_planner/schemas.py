@@ -34,7 +34,7 @@ class OCRSearchParams(BaseModel):
 
     query: str
     top_k: int = TOP_K_DEFAULTS["ocr_search"]
-    mode: Literal["exact", "fuzzy", "similarity"] = "similarity"
+    mode: Literal["exact", "fuzzy", "similarity"] = "fuzzy"
 
 
 class ASRSearchParams(BaseModel):
@@ -42,15 +42,7 @@ class ASRSearchParams(BaseModel):
 
     query: str
     top_k: int = TOP_K_DEFAULTS["asr_search"]
-    mode: Literal["exact", "fuzzy", "similarity"] = "similarity"
-
-
-class CaptionSearchParams(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    query: str
-    top_k: int = TOP_K_DEFAULTS["caption_search"]
-    mode: Literal["exact", "fuzzy", "similarity"] = "similarity"
+    mode: Literal["exact", "fuzzy", "similarity"] = "fuzzy"
 
 
 class ObjectSearchParams(BaseModel):
@@ -75,7 +67,6 @@ ToolName = Literal[
     "shot_search",
     "ocr_search",
     "asr_search",
-    "caption_search",
     "object_search",
     "track_search",
 ]
@@ -87,7 +78,6 @@ TOOL_PARAMS: dict[str, type[BaseModel]] = {
     "shot_search": ShotSearchParams,
     "ocr_search": OCRSearchParams,
     "asr_search": ASRSearchParams,
-    "caption_search": CaptionSearchParams,
     "object_search": ObjectSearchParams,
     "track_search": TrackSearchParams,
 }
@@ -124,7 +114,6 @@ def to_contract_tool_calls(planned_calls: list[PlannedToolCall]) -> list[ToolCal
 
 __all__ = [
     "ASRSearchParams",
-    "CaptionSearchParams",
     "ClipSearchParams",
     "FrameSearchParams",
     "OCRSearchParams",

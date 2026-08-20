@@ -1,73 +1,50 @@
 import json
 
 from BackEnd.app.contracts.models import StructuredQuery
-from BackEnd.app.intent_extractor.schemas import TaskClassification, TaskName
 
 
-def classify_task_prompt() -> str:
-    schema = json.dumps(
-        TaskClassification.model_json_schema(),
-        ensure_ascii=False,
-        indent=2,
-    )
-
-    return f"""You are the task classifier for an online multimodal video retrieval pipeline.
-
-Classify the user query into exactly one task:
-- KIS: the user wants to find a known scene, object, action, text, speech, or moment in video.
-- VQA: the user asks a question that must be answered from retrieved visual/video evidence.
-
-Return only valid JSON matching this JSON Schema:
-{schema}
-
-User query:
-{{raw_query}}
-"""
-
-
-def extract_query_prompt(task: TaskName) -> str:
+def extract_structured_query_prompt() -> str:
     schema = json.dumps(
         StructuredQuery.model_json_schema(),
         ensure_ascii=False,
         indent=2,
     )
 
-    common_instruction = f"""Return only valid JSON matching this JSON Schema:
+    return f"""You extract a complete structured query for an online multimodal video
+retrieval pipeline in one response.
+
+Return only valid JSON matching this JSON Schema:
 {schema}
 
-Use task exactly "{task}".
 Use query_id exactly "{{query_id}}".
+Choose task exactly "KIS", "VQA", or "TRAKE".
 Do not add fields outside the schema.
-"""
 
-    if task == "KIS":
-        return f"""You extract a structured KIS retrieval query from a raw user query.
+Task rules:
+- KIS: find a known scene, object, action, visible text, speech, or moment. Set question
+  to an empty string and provide at least one useful retrieval signal.
+- VQA: answer a question from video evidence. Preserve the user's question in question and
+  add only retrieval hints needed to find supporting evidence.
+- TRAKE: find a video containing a sequence of events in temporal order. Set question to an
+  empty string, decompose the sequence into events with stable IDs E1, E2, ..., and add a
+  temporal_constraints item for each stated or implied ordering relation. Use event IDs in
+  before and after. Add visual, OCR, ASR, and object constraints only when they help retrieve
+  the individual events.
 
-Focus on searchable evidence in the video: visible objects, scenes, actions, OCR text,
-spoken words, and constraints that should be excluded.
+Feedback rules:
+- Feedback is an additional user correction or constraint. Apply it to all relevant
+  retrieval fields. If it conflicts with the raw query, feedback takes precedence.
+- Preserve the feedback text exactly as one item in the feedback list when it is non-empty.
+- Put exclusions implied by feedback into negative_constraints when applicable.
 
-{common_instruction}
-
-User query:
+Raw user query:
 {{raw_query}}
+
+User feedback (may be empty):
+{{feedback}}
 """
-
-    if task == "VQA":
-        return f"""You extract a structured VQA retrieval query from a raw user question.
-
-Preserve the user's question as the answer target, and add only retrieval hints that help
-find evidence for answering it.
-
-{common_instruction}
-
-User query:
-{{raw_query}}
-"""
-
-    raise ValueError(f"Unsupported intent extraction task: {task}")
 
 
 __all__ = [
-    "classify_task_prompt",
-    "extract_query_prompt",
+    "extract_structured_query_prompt",
 ]

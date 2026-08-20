@@ -1,197 +1,83 @@
 from __future__ import annotations
 
-import logging
-import os
-from collections.abc import Mapping
+from collections import defaultdict
 from typing import Any
 
+from BackEnd.app.Database.postgre_manager import PostgreManager
 from BackEnd.app.contracts.models import SearchHit
 
-try:
-    from elasticsearch import AsyncElasticsearch
-except ImportError:
-    AsyncElasticsearch = None  # type: ignore[assignment,misc]
+
+_db_manager: Any | None = None
 
 
-logger = logging.getLogger(__name__)
-_es_client: Any | None = None
+def configure_object_search_manager(manager: Any | None) -> None:
+    """Inject a PostgreSQL manager for tests or application startup."""
+
+    global _db_manager
+    _db_manager = manager
 
 
-def configure_object_search_client(client: Any | None) -> None:
-    global _es_client
-    _es_client = client
+def _get_manager() -> Any:
+    global _db_manager
+    if _db_manager is None:
+        _db_manager = PostgreManager()
+    return _db_manager
 
 
-def _get_client() -> Any | None:
-    global _es_client
-    if _es_client is not None:
-        return _es_client
-    if AsyncElasticsearch is None:
-        return None
-
-    elasticsearch_url = os.getenv("ELASTICSEARCH_URL")
-    _es_client = (
-        AsyncElasticsearch(elasticsearch_url)
-        if elasticsearch_url
-        else AsyncElasticsearch()
-    )
-    return _es_client
-
-
-def _get_value(value: Mapping[str, Any] | Any, field: str) -> Any:
-    if isinstance(value, Mapping):
-        return value.get(field)
-    return getattr(value, field, None)
-
-
-def _required_value(value: Mapping[str, Any] | Any, field: str) -> Any:
-    result = _get_value(value, field)
-    if result is None:
-        raise ValueError(f"Elasticsearch result has no {field!r}")
-    return result
-
-
-def _object_query(object_class: str) -> dict[str, Any]:
-    return {
-        "bool": {
-            "filter": [
-                {"term": {"object_class": object_class}},
-            ]
-        }
-    }
-
-
-def _object_aggregations(min_count: int, top_k: int) -> dict[str, Any]:
-    return {
-        "by_video": {
-            "terms": {"field": "video_id", "size": top_k},
-            "aggs": {
-                "by_shot": {
-                    "terms": {"field": "shot_id", "size": top_k},
-                    "aggs": {
-                        "representative": {"top_hits": {"size": 1}},
-                        "minimum_count": {
-                            "bucket_selector": {
-                                "buckets_path": {"count": "_count"},
-                                "script": f"params.count >= {min_count}",
-                            }
-                        },
-                    },
-                }
-            },
-        }
-    }
-
-
-def _track_query(object_class: str, relation: str) -> dict[str, Any]:
-    return {
-        "bool": {
-            "filter": [
-                {"term": {"object_class": object_class}},
-                {"term": {"relation": relation}},
-            ]
-        }
-    }
-
-
-def _top_level_hits(response: Mapping[str, Any] | Any) -> list[Any]:
-    hits = _get_value(response, "hits")
-    if hits is None:
-        return []
-    return _get_value(hits, "hits") or []
-
-
-def _aggregation_hits(value: Mapping[str, Any] | Any) -> list[Any]:
-    if isinstance(value, list):
-        results: list[Any] = []
-        for child in value:
-            results.extend(_aggregation_hits(child))
-        return results
-    if not isinstance(value, Mapping):
-        return []
-
-    hits = value.get("hits")
-    if isinstance(hits, Mapping) and isinstance(hits.get("hits"), list):
-        return list(hits["hits"])
-
-    results: list[Any] = []
-    for child in value.values():
-        results.extend(_aggregation_hits(child))
-    return results
-
-
-def _response_hits(response: Mapping[str, Any] | Any) -> list[Any]:
-    direct_hits = _top_level_hits(response)
-    if direct_hits:
-        return direct_hits
-    aggregations = _get_value(response, "aggregations")
-    return _aggregation_hits(aggregations)
-
-
-def _to_search_hits(
-    response: Mapping[str, Any] | Any,
+def _object_hits_from_rows(
+    rows: list[tuple[Any, Any]],
     *,
-    source: str,
-    entity_type: str,
+    min_count: int,
+    top_k: int,
     event_id: str | None,
     tool_call_id: str | None,
 ) -> list[SearchHit]:
-    results: list[SearchHit] = []
-    for rank, hit in enumerate(_response_hits(response), start=1):
-        document = _required_value(hit, "_source")
-        score = _get_value(hit, "_score")
-        results.append(
-            SearchHit(
-                source=source,
-                entity_type=entity_type,
-                entity_id=_required_value(hit, "_id"),
-                video_id=_required_value(document, "video_id"),
-                start_ms=_required_value(document, "start_ms"),
-                end_ms=_required_value(document, "end_ms"),
-                rank=rank,
-                raw_score=0.0 if score is None else score,
-                event_id=event_id,
-                tool_call_id=tool_call_id,
-            )
+    groups: dict[tuple[str, str], list[tuple[Any, Any]]] = defaultdict(list)
+    for detection, frame in rows:
+        # Official frames can have no shot_id. They must remain separate rather
+        # than being merged into one artificial video-level group.
+        group_id = frame.shot_id or frame.frame_id
+        groups[(frame.video_id, group_id)].append((detection, frame))
+
+    representatives: list[tuple[int, Any, Any]] = []
+    for detections in groups.values():
+        if len(detections) < min_count:
+            continue
+        detection, frame = max(
+            detections,
+            key=lambda item: (
+                item[0].confidence,
+                -item[1].timestamp_ms,
+                -item[0].detection_id,
+            ),
         )
-    return results
+        representatives.append((len(detections), detection, frame))
 
-
-async def _search(
-    *,
-    index: str,
-    query: dict[str, Any],
-    source: str,
-    entity_type: str,
-    event_id: str | None,
-    tool_call_id: str | None,
-    size: int,
-    aggregations: dict[str, Any] | None = None,
-) -> list[SearchHit]:
-    client = _get_client()
-    if client is None:
-        logger.info("object index not available")
-        return []
-
-    try:
-        request: dict[str, Any] = {
-            "index": index,
-            "query": query,
-            "size": size,
-        }
-        if aggregations is not None:
-            request["aggs"] = aggregations
-        response = await client.search(**request)
-        return _to_search_hits(
-            response,
-            source=source,
-            entity_type=entity_type,
+    representatives.sort(
+        key=lambda item: (
+            -item[0],
+            -item[1].confidence,
+            item[2].timestamp_ms,
+            item[1].detection_id,
+        )
+    )
+    return [
+        SearchHit(
+            source="postgresql_object_detection",
+            entity_type="object_detection",
+            entity_id=str(detection.detection_id),
+            video_id=frame.video_id,
+            shot_id=frame.shot_id,
+            frame_id=frame.frame_id,
+            start_ms=frame.timestamp_ms,
+            end_ms=frame.timestamp_ms,
+            rank=rank,
+            raw_score=detection.confidence,
             event_id=event_id,
             tool_call_id=tool_call_id,
         )
-    except Exception:
-        logger.info("object index not available")
-        return []
+        for rank, (_, detection, frame) in enumerate(representatives[:top_k], start=1)
+    ]
 
 
 async def object_search(
@@ -201,13 +87,17 @@ async def object_search(
     event_id: str | None = None,
     tool_call_id: str | None = None,
 ) -> list[SearchHit]:
-    return await _search(
-        index="object_detection_index",
-        query=_object_query(object_class),
-        aggregations=_object_aggregations(min_count, top_k),
-        size=0,
-        source="object_detection",
-        entity_type="object_detection",
+    """Find representative frames with the requested object via PostgreSQL."""
+
+    if top_k <= 0:
+        return []
+    if min_count <= 0:
+        raise ValueError("min_count must be greater than zero")
+    rows = _get_manager().search_object_detections(object_class)
+    return _object_hits_from_rows(
+        rows,
+        min_count=min_count,
+        top_k=top_k,
         event_id=event_id,
         tool_call_id=tool_call_id,
     )
@@ -220,20 +110,31 @@ async def track_search(
     event_id: str | None = None,
     tool_call_id: str | None = None,
 ) -> list[SearchHit]:
-    return await _search(
-        index="tracking_index",
-        query=_track_query(object_class, relation),
-        size=top_k,
-        source="tracking",
-        entity_type="object_track",
-        event_id=event_id,
-        tool_call_id=tool_call_id,
-    )
+    """Find persisted continuous object tracks via PostgreSQL."""
+
+    if top_k <= 0 or relation != "continuous_track":
+        return []
+    rows = _get_manager().search_object_tracks(object_class)
+    return [
+        SearchHit(
+            source="postgresql_object_track",
+            entity_type="object_track",
+            entity_id=str(track.track_id),
+            video_id=shot.video_id,
+            shot_id=shot.shot_id,
+            start_ms=track.start_ms,
+            end_ms=track.end_ms,
+            rank=rank,
+            raw_score=track.avg_confidence or 0.0,
+            event_id=event_id,
+            tool_call_id=tool_call_id,
+        )
+        for rank, (track, shot) in enumerate(rows[:top_k], start=1)
+    ]
 
 
 __all__ = [
-    "AsyncElasticsearch",
-    "configure_object_search_client",
+    "configure_object_search_manager",
     "object_search",
     "track_search",
 ]

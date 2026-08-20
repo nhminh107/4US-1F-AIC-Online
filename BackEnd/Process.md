@@ -2,7 +2,8 @@
 
 ## Phạm vi
 
-Đã dựng skeleton v1 cho Online Pipeline video retrieval, ưu tiên `KIS` và `VQA`. `TRAKE` được defer khỏi v1.
+Đã dựng skeleton v1 cho Online Pipeline video retrieval. Intent Extractor hỗ trợ
+`KIS`, `VQA` và `TRAKE`; TRAKE Temporal Aligner phía sau vẫn là phần cần hoàn thiện.
 
 ## Kết quả đã thực hiện
 
@@ -13,11 +14,14 @@
 
 ### Intent Extractor
 
-- `KISQuery` và `VQAQuery` dùng Pydantic discriminated union theo `task`.
-- `SearchHit` được import từ `shared/contracts.py`.
-- Prompt classify và extract tách riêng; schema được inject bằng `model_json_schema()`.
-- Instructor bọc OpenAI client, chạy hai LLM calls: classify rồi extract.
-- Khi hết retry, log warning và fallback về `KISQuery` từ raw text.
+- `StructuredQuery` là contract chung theo `task`.
+- `SearchHit` được import từ shared contracts.
+- Prompt single-shot inject schema bằng `model_json_schema()` và yêu cầu trả trực tiếp
+  `StructuredQuery` cho KIS, VQA hoặc TRAKE.
+- Instructor bọc OpenAI client, chạy một LLM call cho mỗi `RawQuery`.
+- `RawQuery.feedback` được đưa vào prompt, giữ nguyên trong `StructuredQuery.feedback`,
+  và được ưu tiên khi mâu thuẫn với truy vấn gốc.
+- Khi hết retry, log warning và fallback về StructuredQuery KIS từ raw text, vẫn giữ feedback.
 - Extractor nhận cả chuỗi và object có thuộc tính `.text`.
 
 ### Query Planner
@@ -26,7 +30,7 @@
 - `ToolCall` là một class duy nhất, validate parameters qua `TOOL_PARAMS`.
 - Mỗi tool có Params schema riêng.
 - Planner chạy single-shot với `response_model=list[ToolCall]`.
-- Prompt mô tả tool, quy tắc chọn tool theo KIS/VQA và cách chọn `top_k`.
+- Prompt mô tả tool, quy tắc chọn tool theo KIS/VQA/TRAKE và cách chọn `top_k`.
 - Planner fallback về `[]` khi `InstructorRetryException`.
 
 ### Retrieval tools
@@ -36,7 +40,8 @@
 - Object/tracking: `object_search`, `track_search`.
 - Tất cả map kết quả về `SearchHit` và giữ `event_id`.
 - Visual tool có placeholder cho embedding, FAISS và Shared Data Layer resolve.
-- Text/object tools dùng một module-level `AsyncElasticsearch` client.
+- Text tools dùng một module-level `AsyncElasticsearch` client; object/tracking
+  tools query trực tiếp PostgreSQL qua `PostgreManager`.
 
 ### Fast Path và orchestration
 

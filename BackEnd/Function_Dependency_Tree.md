@@ -8,8 +8,8 @@ online_pipeline/
 │   ├── RawQuery
 │   └── run_pipeline
 ├── intent_extractor/
-│   ├── schemas.py: KISQuery, VQAQuery, TaskClassification, StructuredQuery
-│   ├── prompts.py: classify_task_prompt, extract_query_prompt
+│   ├── schemas.py: legacy TaskClassification compatibility type (KIS/VQA/TRAKE)
+│   ├── prompts.py: extract_structured_query_prompt
 │   └── extractor.py: build_instructor_client, extract_intent_sync, extract_intent
 ├── fast_path/
 │   └── runner.py: _planned_calls, _run_with_timeout, run_fast_path
@@ -35,13 +35,12 @@ online_pipeline/
 run_pipeline(RawQuery)
 ├── extract_intent(RawQuery)
 │   ├── instructor.from_openai(OpenAI())
-│   ├── classify_task_prompt()
-│   └── extract_query_prompt(task) -> StructuredQuery
+│   └── extract_structured_query_prompt() -> StructuredQuery
 ├── asyncio.gather(...)
 │   ├── run_fast_path(StructuredQuery)
 │   │   ├── clip_search -> embed_text -> search_faiss -> resolve_entity
-│   │   ├── ocr_search -> AsyncElasticsearch(ocr_index)
-│   │   └── asr_search -> AsyncElasticsearch(asr_index)
+│   │   ├── ocr_search -> AsyncElasticsearch(ocr alias)
+│   │   └── asr_search -> AsyncElasticsearch(transcript alias)
 │   └── run_query_planner(StructuredQuery)
 │       ├── instructor.from_openai(OpenAI())
 │       └── list[ToolCall]
@@ -51,7 +50,8 @@ run_pipeline(RawQuery)
 │   ├── shot_search
 │   ├── ocr_search
 │   ├── asr_search
-│   └── caption_search
+│   ├── object_search -> PostgreManager.search_object_detections
+│   └── track_search -> PostgreManager.search_object_tracks
 └── return fast_hits + agent_hits
 ```
 
@@ -69,15 +69,15 @@ run_pipeline(RawQuery)
 | `ocr_search` | query, top_k, mode, event_id | `list[SearchHit]` | ES/config error raises to caller |
 | `asr_search` | query, top_k, mode, event_id | `list[SearchHit]` | ES/config error raises to caller |
 | `caption_search` | query, top_k, mode, event_id | `list[SearchHit]` | ES/config error raises to caller |
-| `object_search` | object class, top_k, min_count, event_id | `list[SearchHit]` | log info and return `[]` |
-| `track_search` | object class, top_k, relation, event_id | `list[SearchHit]` | log info and return `[]` |
+| `object_search` | object class, top_k, min_count, event_id | `list[SearchHit]` | PostgreSQL error raises to caller |
+| `track_search` | object class, top_k, relation, event_id | `list[SearchHit]` | PostgreSQL error raises to caller |
 
 ## Shared data flow
 
 ```text
-RawQuery.text
-  -> prompt input
-  -> KISQuery / VQAQuery
+RawQuery.text + RawQuery.feedback
+  -> single-shot StructuredQuery prompt
+  -> StructuredQuery
   -> ToolCall.parameters
   -> retrieval tool
   -> SearchHit

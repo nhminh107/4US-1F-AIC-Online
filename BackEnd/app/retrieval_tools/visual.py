@@ -29,6 +29,12 @@ def get_visual_retrieval_tools() -> Any:
     return _visual_tools
 
 
+async def warmup_visual_retrieval_tools() -> None:
+    """Load the visual backend before a retrieval timeout is applied."""
+
+    await asyncio.to_thread(get_visual_retrieval_tools)
+
+
 async def _run_visual_tool(method_name: str, **kwargs) -> list[SearchHit]:
     tools = get_visual_retrieval_tools()
     method = getattr(tools, method_name)
@@ -87,4 +93,5 @@ __all__ = [
     "frame_search",
     "get_visual_retrieval_tools",
     "shot_search",
+    "warmup_visual_retrieval_tools",
 ]
