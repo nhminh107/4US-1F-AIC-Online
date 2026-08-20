@@ -22,10 +22,21 @@ def get_evidence_bundle(
     start_ms: int,
     end_ms: int,
     db_mng: PostgreManager,
+    *,
+    modalities: set[str] | None = None,
+    limits: dict[str, int] | None = None,
+    priority_evidence_ids: set[str] | None = None,
 ) -> EvidenceBundle:
     """Load modality-specific evidence for one video time range."""
 
-    result = db_mng.get_evidence_by_video_id_and_time(video_id, start_ms, end_ms)
+    result = db_mng.get_evidence_by_video_id_and_time(
+        video_id,
+        start_ms,
+        end_ms,
+        modalities=modalities,
+        limits=limits,
+        priority_evidence_ids=priority_evidence_ids,
+    )
     shots, clips, frames, ocr, asr, captions, objects, tracks = result
 
     return EvidenceBundle(
