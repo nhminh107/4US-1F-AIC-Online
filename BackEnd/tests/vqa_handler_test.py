@@ -7,7 +7,7 @@ from BackEnd.app.contracts.models import (
     StructuredQuery,
 )
 from BackEnd.app.contracts.pipeline import FrameMetadata
-from BackEnd.app.services.vqa_handler import VQAHandler, VQAModelAnswer
+from BackEnd.app.vqa import VQAHandler, VQAModelAnswer
 
 
 class FakeVLM:
