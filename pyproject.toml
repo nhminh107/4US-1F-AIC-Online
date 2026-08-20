@@ -11,4 +11,5 @@ dependencies = [
     "sentence-transformers",
     "pillow",
     "python-dotenv",
+    "httpx",
 ]
