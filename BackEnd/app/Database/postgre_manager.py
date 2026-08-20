@@ -8,7 +8,7 @@ from datetime import date
 from typing import Any, TypeVar
 
 from dotenv import load_dotenv
-from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy import and_, case, create_engine, func, or_, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
