@@ -26,3 +26,23 @@ def evidence_loader(video_id: str, start_ms: int, end_ms: int) -> EvidenceBundle
 The handler returns `status="uncertain"` with zero confidence when no local
 visual evidence is available. Model implementations are injected through the
 `VQAModelClient` protocol so the handler is not coupled to one provider.
+
+## FPT AI Marketplace
+
+Configure secrets locally (never commit the real key):
+
+```env
+VQA_API_KEY=your-local-secret
+VQA_BASE_URL=https://mkp-api.fptcloud.com
+VQA_MODEL=your-vision-language-model-name
+VQA_TIMEOUT_SECONDS=60
+```
+
+Then wire the concrete client:
+
+```python
+from BackEnd.app.vqa import FPTVLMClient, VQAHandler
+
+handler = VQAHandler(FPTVLMClient.from_env())
+result = handler.handle(query, ranked_candidates, evidence_loader)
+```
