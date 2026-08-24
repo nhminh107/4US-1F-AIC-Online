@@ -9,9 +9,16 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import FileResponse
 
 from BackEnd.app.Database.postgre_manager import PostgreManager
-from BackEnd.app.api.config import API_PREFIX, SELECTIVE_VERIFIER_ENABLED
+from BackEnd.app.api.config import (
+    API_PREFIX,
+    RETRIEVAL_V2_CORPUS_STATS_PATH,
+    RETRIEVAL_V2_ENABLED,
+    RETRIEVAL_V2_VIDEO_INDEX_PATH,
+    SELECTIVE_VERIFIER_ENABLED,
+)
 from BackEnd.app.api.models import HealthResponse, QueryRequest, QueryResponse
 from BackEnd.app.api.pipeline import OnlinePipeline
+from BackEnd.app.retrieval_v2.readiness import inspect_retrieval_artifacts
 
 
 logger = logging.getLogger(__name__)
@@ -25,6 +32,7 @@ def _build_online_pipeline() -> OnlinePipeline:
     return OnlinePipeline(
         PostgreManager(),
         selective_verifier_enabled=SELECTIVE_VERIFIER_ENABLED,
+        retrieval_v2_enabled=RETRIEVAL_V2_ENABLED,
     )
 
 
@@ -50,8 +58,18 @@ def close_online_pipeline() -> None:
 
 @router.get("/health", response_model=HealthResponse)
 async def health() -> HealthResponse:
+    readiness = inspect_retrieval_artifacts(
+        RETRIEVAL_V2_CORPUS_STATS_PATH,
+        RETRIEVAL_V2_VIDEO_INDEX_PATH,
+    )
     return HealthResponse(
         selective_verifier_enabled=SELECTIVE_VERIFIER_ENABLED,
+        retrieval_v2_enabled=RETRIEVAL_V2_ENABLED,
+        retrieval_v2_corpus_stats_ready=readiness.corpus_stats_ready,
+        retrieval_v2_video_index_ready=readiness.video_index_ready,
+        retrieval_v2_degraded_reasons=(
+            list(readiness.degraded_reasons) if RETRIEVAL_V2_ENABLED else []
+        ),
     )
 
 

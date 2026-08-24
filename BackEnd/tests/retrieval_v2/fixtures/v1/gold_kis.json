@@ -1,0 +1,170 @@
+{
+  "schema_version": "retrieval-v2-kis-gold/v1",
+  "queries": [
+    {
+      "query_id": "query-p1-2-kis",
+      "task": "KIS",
+      "description_vi": "Ban do lan luot hien bon cong trinh thuy loi, sau do la dap tren cao va can dap duoi troi mua.",
+      "accepted": {
+        "video_id": "L21_V003",
+        "intervals_ms": [[32000, 75000]],
+        "frames": [13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-2-asr-dam-mention",
+          "category": "ocr_asr_noun_leakage",
+          "video_id": "L28_V001",
+          "interval_ms": [1104380, 1107380],
+          "reason": "Transcript mentions hydroelectric dams but does not establish the requested visual sequence."
+        },
+        {
+          "id": "p1-2-four-dams-transcript",
+          "category": "wrong_count_relation",
+          "video_id": "L29_V014",
+          "interval_ms": [505080, 511080],
+          "reason": "Spoken text contains a noisy four-dams match without four structures appearing on the map."
+        },
+        {
+          "id": "p1-2-dam-without-map-first",
+          "category": "wrong_event_order",
+          "video_id": "L28_V020",
+          "interval_ms": [300000, 380000],
+          "reason": "Contains dam footage but not the required map-first then aerial then rainy close-view order."
+        }
+      ]
+    },
+    {
+      "query_id": "query-p1-4-kis",
+      "task": "KIS",
+      "description_vi": "Dan su tu tai London Zoo, sau do hai nhan vien ao xanh can va ghi so lieu con vat.",
+      "accepted": {
+        "video_id": "L22_V021",
+        "intervals_ms": [[640000, 710000]],
+        "frames": [182, 183, 184, 185, 186, 187, 188, 189, 190, 191, 192, 193]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-4-lions-only",
+          "category": "correct_video_wrong_moment",
+          "video_id": "L22_V021",
+          "interval_ms": [350000, 380000],
+          "frame_idx": 110,
+          "reason": "Correct video but an earlier lion-only moment lacks the keeper weighing sequence."
+        }
+      ]
+    },
+    {
+      "query_id": "query-p1-18-kis",
+      "task": "KIS",
+      "description_vi": "Trinh bay mon bun bang nhieu va nuoc dung, ket thuc voi ngo va chen nuoc cham co hai mieng ot.",
+      "accepted": {
+        "video_id": "L26_V389",
+        "intervals_ms": [[225000, 260000]],
+        "frames": [132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-18-other-noodle-bowl-1",
+          "category": "same_noun_wrong_action",
+          "video_id": "L28_V014",
+          "interval_ms": [205000, 220000],
+          "frame_idx": 133,
+          "reason": "Shows a noodle dish but not the specified ladling, ingredients, garnish, and final sauce sequence."
+        },
+        {
+          "id": "p1-18-adjacent-food-video",
+          "category": "same_noun_wrong_action",
+          "video_id": "L26_V390",
+          "interval_ms": [220000, 240000],
+          "frame_idx": 154,
+          "reason": "Adjacent food video with similar nouns but the wrong recipe and plating action."
+        }
+      ]
+    },
+    {
+      "query_id": "query-p1-19-kis",
+      "task": "KIS",
+      "description_vi": "Con lan xoay tren cot, nhay qua cot va ngoam bi do co hoa vang roi tiep tuc nhay.",
+      "accepted": {
+        "video_id": "L24_V035",
+        "intervals_ms": [[550000, 615000]],
+        "frames": [127, 128, 129, 130, 131, 132, 133, 134, 135, 136, 137, 138, 139, 140, 141, 142, 143, 144]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-19-lion-dance-wrong-routine-1",
+          "category": "same_noun_wrong_action",
+          "video_id": "L24_V022",
+          "interval_ms": [150000, 165000],
+          "frame_idx": 40,
+          "reason": "Lion dance scene without the pole jump and pumpkin bite action."
+        },
+        {
+          "id": "p1-19-lion-dance-wrong-routine-2",
+          "category": "same_noun_wrong_action",
+          "video_id": "L24_V019",
+          "interval_ms": [375000, 395000],
+          "frame_idx": 110,
+          "reason": "A different lion dance routine retrieved by the common costume and pole nouns."
+        }
+      ]
+    },
+    {
+      "query_id": "query-p1-20-kis",
+      "task": "KIS",
+      "description_vi": "Ba nguoi di xuong doc trong mua, hai nguoi cam du, sau do ca nhom di ve nha ben ao.",
+      "accepted": {
+        "video_id": "L21_V026",
+        "intervals_ms": [[230000, 340000]],
+        "frames": [64, 65, 66]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-20-rain-wrong-people-relation-1",
+          "category": "wrong_count_relation",
+          "video_id": "L21_V007",
+          "interval_ms": [700000, 730000],
+          "frame_idx": 178,
+          "reason": "Rain and umbrellas are present but the people count, bear raincoat, and route relation are wrong."
+        },
+        {
+          "id": "p1-20-rain-wrong-people-relation-2",
+          "category": "wrong_count_relation",
+          "video_id": "L28_V008",
+          "interval_ms": [575000, 600000],
+          "frame_idx": 275,
+          "reason": "Generic rainy walking scene without the requested group composition and destination."
+        }
+      ]
+    },
+    {
+      "query_id": "query-p1-24-kis",
+      "task": "KIS",
+      "description_vi": "Lia qua bon san pham luc binh, sau do nguoi phu nu nang mot tach tra khi nghe tro chuyen.",
+      "accepted": {
+        "video_id": "L29_V001",
+        "intervals_ms": [[330000, 380000]],
+        "frames": [222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232]
+      },
+      "hard_negatives": [
+        {
+          "id": "p1-24-correct-video-earlier-products",
+          "category": "correct_video_wrong_moment",
+          "video_id": "L29_V001",
+          "interval_ms": [245000, 260000],
+          "frame_idx": 204,
+          "reason": "Correct handicraft report but an earlier product shot before the requested pan and tea-cup action."
+        },
+        {
+          "id": "p1-24-correct-video-later-moment",
+          "category": "wrong_event_order",
+          "video_id": "L29_V001",
+          "interval_ms": [460000, 480000],
+          "frame_idx": 312,
+          "reason": "Correct video but a later scene that cannot satisfy the requested ordered transition."
+        }
+      ]
+    }
+  ]
+}

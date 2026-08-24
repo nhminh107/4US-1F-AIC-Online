@@ -1,0 +1,116 @@
+services:
+  postgres:
+    image: postgres:14
+    container_name: aic-postgres-runtime
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-aic_hcmc}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - ./release_package/postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-aic_hcmc}"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.15.0
+    container_name: aic-elasticsearch-runtime
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms4g -Xmx4g}
+    ports:
+      - "${ELASTICSEARCH_PORT:-9200}:9200"
+    volumes:
+      - ./release_package/elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.online-api
+      args:
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
+        TORCH_PACKAGE: ${TORCH_PACKAGE:-torch==2.3.1+cu121}
+    container_name: aic-online-api-runtime
+    gpus: ${API_GPUS:-all}
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aic_hcmc}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      FAISS_INDEX_DIR: ${FAISS_INDEX_DIR:-/app/artifacts/faiss}
+      TEXT_EMBEDDING_MODEL_NAME: ${TEXT_EMBEDDING_MODEL_NAME:-sentence-transformers/clip-ViT-B-32-multilingual-v1}
+      FAISS_INDEX_MODEL_NAME: ${FAISS_INDEX_MODEL_NAME:-clip-ViT-B-32}
+      CLIP_MODEL_NAME: ${CLIP_MODEL_NAME:-clip-ViT-B-32}
+      CLIP_MODEL_DEVICE: ${CLIP_MODEL_DEVICE:-cuda}
+      NVIDIA_VISIBLE_DEVICES: ${NVIDIA_VISIBLE_DEVICES:-all}
+      NVIDIA_DRIVER_CAPABILITIES: ${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
+      FPT_API_KEY: ${FPT_API_KEY:-}
+      FPT_BASE_URL: ${FPT_BASE_URL:-https://mkp-api.fptcloud.com}
+      RETRIEVAL_V2_ENABLED: ${RETRIEVAL_V2_ENABLED:-false}
+      RETRIEVAL_V2_RAW_TARGET: ${RETRIEVAL_V2_RAW_TARGET:-3000}
+      RETRIEVAL_V2_RAW_MAX: ${RETRIEVAL_V2_RAW_MAX:-5000}
+      RETRIEVAL_V2_UNIQUE_MIN: ${RETRIEVAL_V2_UNIQUE_MIN:-1600}
+      RETRIEVAL_V2_UNIQUE_MAX: ${RETRIEVAL_V2_UNIQUE_MAX:-2000}
+      RETRIEVAL_V2_BAND_LIMIT: ${RETRIEVAL_V2_BAND_LIMIT:-800}
+      RETRIEVAL_V2_VIDEO_LIMIT: ${RETRIEVAL_V2_VIDEO_LIMIT:-60}
+      RETRIEVAL_V2_LOCAL_K: ${RETRIEVAL_V2_LOCAL_K:-1500}
+      RETRIEVAL_V2_RETRY_K: ${RETRIEVAL_V2_RETRY_K:-800}
+      RETRIEVAL_V2_RERANK_LIMIT: ${RETRIEVAL_V2_RERANK_LIMIT:-100}
+      RETRIEVAL_V2_REVIEW_LIMIT: ${RETRIEVAL_V2_REVIEW_LIMIT:-7}
+      RETRIEVAL_V2_MAX_RETRIES: ${RETRIEVAL_V2_MAX_RETRIES:-2}
+      RETRIEVAL_V2_CORPUS_STATS_PATH: ${RETRIEVAL_V2_CORPUS_STATS_PATH:-/app/artifacts/retrieval/corpus_stats.json}
+      RETRIEVAL_V2_VIDEO_INDEX_PATH: ${RETRIEVAL_V2_VIDEO_INDEX_PATH:-/app/artifacts/retrieval/video_index.npz}
+      SELECTIVE_VERIFIER_ENABLED: ${SELECTIVE_VERIFIER_ENABLED:-true}
+      VQA_MAX_CANDIDATES: ${VQA_MAX_CANDIDATES:-100}
+      CANDIDATE_MERGE_GAP_MS: ${CANDIDATE_MERGE_GAP_MS:-2000}
+      VQA_API_KEY: ${VQA_API_KEY:-}
+      VQA_BASE_URL: ${VQA_BASE_URL:-https://mkp-api.fptcloud.com}
+      VQA_MODEL: ${VQA_MODEL:-}
+      VQA_TIMEOUT_SECONDS: ${VQA_TIMEOUT_SECONDS:-60}
+    ports:
+      - "${API_PORT:-8000}:8000"
+    volumes:
+      - ./release_package/artifacts/faiss:/app/artifacts/faiss:ro
+      - ./release_package/artifacts/retrieval:/app/artifacts/retrieval:ro
+      - ./release_package/data:/app/data:ro
+      - model-cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8000/api/v1/health', timeout=5).read()\""]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+
+  data-tools:
+    build:
+      context: .
+      dockerfile: Dockerfile.data-tools
+    profiles: ["tools"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/${POSTGRES_DB:-aic_hcmc}
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      FAISS_INDEX_DIR: ${FAISS_INDEX_DIR:-/app/artifacts/faiss}
+    volumes:
+      - .:/app
+      - ./release_package/artifacts/faiss:/app/artifacts/faiss:ro
+      - ./release_package/data:/app/data:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+
+volumes:
+  model-cache:

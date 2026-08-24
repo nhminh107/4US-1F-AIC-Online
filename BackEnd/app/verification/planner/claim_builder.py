@@ -23,6 +23,22 @@ class ClaimBuilder:
         claims: list[VerificationClaim] = []
         claims.extend(self._constraint_claims(query))
 
+        if isinstance(result, KISResult) and (query.visual_queries or not claims):
+            claims.append(
+                VerificationClaim(
+                    claim_id="claim-kis-moment",
+                    claim_type=ClaimType.KIS_MOMENT,
+                    text=f"moment {result.start_ms}-{result.end_ms}",
+                    importance=ClaimImportance.SOFT,
+                    metadata={
+                        "start_ms": result.start_ms,
+                        "end_ms": result.end_ms,
+                        "representative_frame_id": result.representative_frame_id,
+                        "video_id": result.video_id,
+                    },
+                )
+            )
+
         if isinstance(result, VQAResult) and result.status == "answered" and result.answer:
             claims.append(
                 VerificationClaim(
@@ -43,6 +59,23 @@ class ClaimBuilder:
                 }
                 for event in result.events
             }
+            if result.events:
+                weakest = min(result.events, key=lambda e: (e.end_ms - e.start_ms, e.event_id))
+                claims.append(
+                    VerificationClaim(
+                        claim_id=f"claim-trake-weakest-event-{weakest.event_id}",
+                        claim_type=ClaimType.TRAKE_EVENT,
+                        text=f"event {weakest.event_id} in {weakest.start_ms}-{weakest.end_ms}",
+                        importance=ClaimImportance.SOFT,
+                        metadata={
+                            "event_id": weakest.event_id,
+                            "start_ms": weakest.start_ms,
+                            "end_ms": weakest.end_ms,
+                            "candidate_id": weakest.candidate_id,
+                            "video_id": result.video_id,
+                        },
+                    )
+                )
             for constraint in query.temporal_constraints:
                 metadata = {"constraint": constraint, "events": event_by_id}
                 claims.append(

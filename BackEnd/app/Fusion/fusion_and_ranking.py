@@ -60,32 +60,69 @@ class FusionRanking():
                     result[key] = 0 
 
         return result
-    def __region_scoring(self, candidate_region: CandidateRegion, weight_buff: dict): 
+    def __region_scoring(self, candidate_region: CandidateRegion, weight_buff: dict) -> float: 
         score = 0.0
+        evidence_by_type: dict[str, list] = {}
         for candidate in candidate_region.evidence:
-            candidate_score = (self.weight_mapping[candidate.entity_type] + weight_buff[candidate.entity_type])/ (RRF_K + candidate.rank)
-            score += candidate_score
+            evidence_by_type.setdefault(candidate.entity_type, []).append(candidate)
+
+        for entity_type, ev_list in evidence_by_type.items():
+            best_rank = min(ev.rank for ev in ev_list)
+            base_weight = self.weight_mapping.get(entity_type, 1.0)
+            buff = weight_buff.get(entity_type, 0.0)
+            score += (base_weight + buff) / (RRF_K + best_rank)
 
         return score
 
-    def __contraint_result(self): 
-        return ConstraintResult(hard_constraints_passed=True, negative_constraints_passed=True)
+    def __constraint_result(
+        self,
+        candidate_region: CandidateRegion,
+        query: StructuredQuery | None = None,
+    ) -> ConstraintResult:
+        hard_passed = True
+        neg_passed = True
+
+        if query is not None:
+            if query.negative_constraints:
+                neg_keywords = [k.strip().lower() for k in query.negative_constraints if k.strip()]
+                for ev in candidate_region.evidence:
+                    ev_text = f"{ev.entity_id} {ev.source}".lower()
+                    if any(kw in ev_text for kw in neg_keywords):
+                        neg_passed = False
+                        break
+
+            if query.object_constraints:
+                has_object = any(
+                    ev.entity_type in ("object_detection", "object_track")
+                    for ev in candidate_region.evidence
+                )
+                if not has_object:
+                    hard_passed = False
+
+        return ConstraintResult(
+            hard_constraints_passed=hard_passed,
+            negative_constraints_passed=neg_passed,
+        )
     
-    def fusion_and_ranking(self, region_list: list[CandidateRegion], weight_buff: dict, query: StructuredQuery = None):
+    def fusion_and_ranking(
+        self,
+        region_list: list[CandidateRegion],
+        weight_buff: dict,
+        query: StructuredQuery = None,
+    ) -> list[RankedCandidateRegion]:
         buff_weight = self.__prepare_weight_buff(weight_buff)
         list_candidate_ranking = []
 
         for region in region_list: 
-            score = self.__region_scoring(region, buff_weight)
-            cs = self.__contraint_result()
-            """class RankedCandidateRegion(TimeRangeModel):
-                candidate_id: str = Field(min_length=1)
-                event_id: str | None = None
-                video_id: str = Field(min_length=1)
-                fusion_score: float
-                constraint_result: ConstraintResult
-                evidence: list[CandidateEvidence] = Field(default_factory=list)
-            """
+            raw_score = self.__region_scoring(region, buff_weight)
+            cs = self.__constraint_result(region, query)
+
+            score = raw_score
+            if not cs.negative_constraints_passed:
+                score *= 0.1
+            if not cs.hard_constraints_passed:
+                score *= 0.5
+
             candidate_ranking = RankedCandidateRegion(
                 event_id=region.event_id,
                 video_id=region.video_id, 
@@ -94,7 +131,7 @@ class FusionRanking():
                 candidate_id=region.candidate_id,
                 evidence=region.evidence,
                 start_ms=region.start_ms, 
-                end_ms=region.end_ms
+                end_ms=region.end_ms,
             )
 
             list_candidate_ranking.append(candidate_ranking)

@@ -15,6 +15,14 @@ from BackEnd.app.retrieval_tools.text import close_text_search
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    # Warm up visual retrieval backend and FAISS index
+    try:
+        from BackEnd.app.retrieval_tools.visual import warmup_visual_retrieval_tools
+        await warmup_visual_retrieval_tools()
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning("Visual tools warmup: %s", e)
+
     try:
         yield
     finally:

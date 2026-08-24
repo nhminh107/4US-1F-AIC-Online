@@ -1,18 +1,18 @@
-from BackEnd.app import services
-from BackEnd.app import services
-from pathlib import Path
-import json
-from dotenv import load_dotenv
-import os 
 import asyncio
+import json
+import os
+from pathlib import Path
+
+from dotenv import load_dotenv
 import httpx
+
 from BackEnd.CONFIG import RANKING_MODEL
 
 load_dotenv()
 
-LLM_API = os.getenv("RANKING_MODEL_API")
+LLM_API = os.getenv("RANKING_MODEL_API", os.getenv("FPT_API_KEY", ""))
 url = "https://mkp-api.fptcloud.com/chat/completions"
-path = Path.cwd() / "BackEnd" / "app" / "Fusion" / "prompt.txt"
+path = Path(__file__).parent / "prompt.txt"
 
 class LLM_DynamicWeight: 
     def __init__(self):

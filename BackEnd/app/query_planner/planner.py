@@ -56,6 +56,8 @@ def build_instructor_client() -> Any:
         OpenAI(
             api_key=LLM_CONFIG.api_key,
             base_url=LLM_CONFIG.base_url,
+            timeout=10.0,
+            max_retries=1,
         ),
         mode=instructor.Mode.JSON,
     )

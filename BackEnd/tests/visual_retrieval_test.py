@@ -285,6 +285,18 @@ class FakeFaissIndex:
         return scores, ids
 
 
+class FakeReconstructIndex:
+    def __init__(self):
+        self.vectors = {
+            1: np.array([0.2, 0.8], dtype=np.float32),
+            2: np.array([1.0, 0.0], dtype=np.float32),
+            3: np.array([0.7, 0.3], dtype=np.float32),
+        }
+
+    def reconstruct_batch(self, ids: np.ndarray):
+        return np.stack([self.vectors[int(index)] for index in ids])
+
+
 def _assert_close(result, expected):
     assert [fid for fid, _ in result] == [fid for fid, _ in expected]
     for (_, got_score), (_, want_score) in zip(result, expected):
@@ -303,6 +315,142 @@ def test_raw_search_casts_float64_vector_to_float32():
     _assert_close(result, [(3, 0.9), (7, 0.5)])
 
 
+def test_raw_subset_search_scores_only_allowed_faiss_ids():
+    result = FaissIndexRegistry._raw_subset_search(
+        FakeReconstructIndex(),
+        np.array([1.0, 0.0], dtype=np.float32),
+        faiss_ids=[1, 3],
+        top_k=2,
+    )
+
+    _assert_close(result, [(3, 0.7), (1, 0.2)])
+
+
+def test_frame_search_with_video_filter_uses_true_subset_search():
+    class LocalRegistry(FakeRegistry):
+        def __init__(self):
+            super().__init__(frame_hits=[(1, 0.99)])
+            self.subset_ids = None
+
+        def search_frame_subset(self, vector, faiss_ids, top_k):
+            self.subset_ids = list(faiss_ids)
+            return [(2, 0.91)]
+
+    class LocalDb(FakeDbManager):
+        def get_frame_faiss_ids_for_videos(self, video_ids, **_kwargs):
+            assert video_ids == ["V2"]
+            return [2]
+
+    registry = LocalRegistry()
+    db_mng = LocalDb(
+        frame_hits={
+            2: FrameEmbeddingHit(
+                faiss_id=2,
+                frame_id="F2",
+                video_id="V2",
+                shot_id="S2",
+                start_ms=2_000,
+                end_ms=2_000,
+            )
+        }
+    )
+    tools = _make_tools(registry, db_mng)
+
+    hits = tools.frame_search(query="specific moment", video_ids=["V2"])
+
+    assert registry.subset_ids == [2]
+    assert [hit.video_id for hit in hits] == ["V2"]
+
+
+def test_repeated_local_prompts_reuse_cached_video_subset_ids():
+    class LocalRegistry(FakeRegistry):
+        def search_frame_subset(self, vector, faiss_ids, top_k):
+            return [(2, 0.91)]
+
+    class CountingDb(FakeDbManager):
+        subset_lookups = 0
+
+        def get_frame_faiss_ids_for_videos(self, video_ids, **_kwargs):
+            self.subset_lookups += 1
+            return [2]
+
+    db_mng = CountingDb(frame_hits={
+        2: FrameEmbeddingHit(
+            faiss_id=2,
+            frame_id="F2",
+            video_id="V2",
+            shot_id="S2",
+            start_ms=2_000,
+            end_ms=2_000,
+        )
+    })
+    tools = _make_tools(LocalRegistry(), db_mng)
+
+    tools.frame_search(query="first detail", video_ids=["V2"])
+    tools.frame_search(query="second detail", video_ids=["V2"])
+
+    assert db_mng.subset_lookups == 1
+
+
+def test_local_visual_subset_cache_is_scoped_by_time_window():
+    class LocalRegistry(FakeRegistry):
+        def search_frame_subset(self, vector, faiss_ids, top_k):
+            return [(faiss_ids[0], 0.91)] if faiss_ids else []
+
+    class TimeScopedDb(FakeDbManager):
+        scopes = []
+
+        def get_frame_faiss_ids_for_videos(self, video_ids, **kwargs):
+            self.scopes.append((tuple(video_ids), kwargs["start_ms"], kwargs["end_ms"]))
+            return [2] if kwargs["start_ms"] == 1_000 else [3]
+
+    db_mng = TimeScopedDb(frame_hits={
+        2: FrameEmbeddingHit(
+            faiss_id=2,
+            frame_id="F2",
+            video_id="V2",
+            shot_id="S2",
+            start_ms=1_500,
+            end_ms=1_500,
+        ),
+        3: FrameEmbeddingHit(
+            faiss_id=3,
+            frame_id="F3",
+            video_id="V2",
+            shot_id="S3",
+            start_ms=11_500,
+            end_ms=11_500,
+        ),
+    })
+    tools = _make_tools(LocalRegistry(), db_mng)
+
+    first = tools.frame_search(
+        query="first moment",
+        video_ids=["V2"],
+        start_ms=1_000,
+        end_ms=2_000,
+    )
+    tools.frame_search(
+        query="same scope",
+        video_ids=["V2"],
+        start_ms=1_000,
+        end_ms=2_000,
+    )
+    second = tools.frame_search(
+        query="later moment",
+        video_ids=["V2"],
+        start_ms=11_000,
+        end_ms=12_000,
+    )
+
+    assert [hit.entity_id for hit in first] == ["F2"]
+    assert [hit.entity_id for hit in second] == ["F3"]
+    assert db_mng.scopes == [
+        (("V2",), 1_000, 2_000),
+        (("V2",), 11_000, 12_000),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # Runner
 # ---------------------------------------------------------------------------
@@ -319,6 +467,9 @@ _ALL_TESTS = [
     test_default_wiring_separates_text_embedding_and_faiss_index_models,
     test_raw_search_filters_out_negative_one_ids,
     test_raw_search_casts_float64_vector_to_float32,
+    test_raw_subset_search_scores_only_allowed_faiss_ids,
+    test_frame_search_with_video_filter_uses_true_subset_search,
+    test_repeated_local_prompts_reuse_cached_video_subset_ids,
 ]
 
 
