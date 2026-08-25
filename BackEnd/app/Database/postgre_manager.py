@@ -1308,8 +1308,10 @@ class PostgreManager:
         converts this result into an ``EvidenceBundle``.
         """
 
-        if start_ms < 0 or end_ms < start_ms:
-            raise ValueError("Time range must satisfy 0 <= start_ms <= end_ms.")
+        # Defensive normalization of start_ms and end_ms
+        norm_start_ms = max(0, min(start_ms, end_ms))
+        norm_end_ms = max(0, max(start_ms, end_ms))
+        start_ms, end_ms = norm_start_ms, norm_end_ms
 
         all_modalities = {
             "shot",
@@ -1480,36 +1482,35 @@ class PostgreManager:
             if "caption" in requested:
                 caption_ids = _priority_numeric_ids(priority_ids, "caption-")
                 caption_priority = Caption.caption_id.in_(caption_ids) if caption_ids else None
-                captions = load_rows(
-                    select(Caption).where(
-                        or_(
-                            Caption.frame_id.in_(
-                                select(Frame.frame_id).where(
-                                    Frame.video_id == video_id,
-                                    Frame.timestamp_ms >= start_ms,
-                                    Frame.timestamp_ms <= end_ms,
-                                )
-                            ),
-                            Caption.clip_id.in_(
-                                select(ClipWindow.clip_id).join(Shot).where(
-                                    Shot.video_id == video_id,
-                                    ClipWindow.start_ms <= end_ms,
-                                    ClipWindow.end_ms >= start_ms,
-                                )
-                            ),
-                            Caption.shot_id.in_(
-                                select(Shot.shot_id).where(
-                                    Shot.video_id == video_id,
-                                    Shot.start_ms <= end_ms,
-                                    Shot.end_ms >= start_ms,
-                                )
-                            ),
-                        )
-                    ),
-                    "caption",
-                    (Caption.caption_id,),
-                    caption_priority,
+                frame_subq = select(Frame.frame_id).where(
+                    Frame.video_id == video_id,
+                    Frame.timestamp_ms >= start_ms,
+                    Frame.timestamp_ms <= end_ms,
                 )
+                clip_subq = select(ClipWindow.clip_id).join(Shot).where(
+                    Shot.video_id == video_id,
+                    ClipWindow.start_ms <= end_ms,
+                    ClipWindow.end_ms >= start_ms,
+                )
+                shot_subq = select(Shot.shot_id).where(
+                    Shot.video_id == video_id,
+                    Shot.start_ms <= end_ms,
+                    Shot.end_ms >= start_ms,
+                )
+                cap_frame = list(session.scalars(select(Caption).where(Caption.frame_id.in_(frame_subq))).all())
+                cap_clip = list(session.scalars(select(Caption).where(Caption.clip_id.in_(clip_subq))).all())
+                cap_shot = list(session.scalars(select(Caption).where(Caption.shot_id.in_(shot_subq))).all())
+                merged_dict: dict[int, Caption] = {}
+                for cap in [*cap_frame, *cap_clip, *cap_shot]:
+                    merged_dict[cap.caption_id] = cap
+                all_caps = list(merged_dict.values())
+                if caption_priority is not None and caption_ids:
+                    priority_set = set(caption_ids)
+                    all_caps.sort(key=lambda c: (0 if c.caption_id in priority_set else 1, c.caption_id))
+                else:
+                    all_caps.sort(key=lambda c: c.caption_id)
+                cap_limit = resolved_limits.get("caption")
+                captions = all_caps[:cap_limit] if cap_limit is not None else all_caps
 
         return [
             [shot_metadata_from_shot(shot) for shot in shots] if "shot" in requested else [],

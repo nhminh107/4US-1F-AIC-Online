@@ -10,7 +10,7 @@ from typing import Iterable, Sequence
 
 
 SCHEMA_VERSION = "retrieval-corpus-stats-v1"
-_TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?", flags=re.IGNORECASE)
+_TOKEN_PATTERN = re.compile(r"[^\W_]+(?:'[^\W_]+)?", flags=re.UNICODE | re.IGNORECASE)
 
 
 def tokenize(text: str) -> tuple[str, ...]:

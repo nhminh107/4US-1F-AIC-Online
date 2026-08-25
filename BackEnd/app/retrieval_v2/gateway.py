@@ -159,7 +159,6 @@ class ToolSearchGateway:
 
         # W9: Post-filter for retrievers that don't support native video_id filtering
         if call.video_ids and call.retriever in {
-            "asr_search",
             "object_search",
             "track_search",
         }:

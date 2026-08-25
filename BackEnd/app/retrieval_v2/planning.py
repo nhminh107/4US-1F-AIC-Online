@@ -11,6 +11,7 @@ from BackEnd.app.retrieval_v2.contracts import (
 )
 from BackEnd.app.retrieval_v2.query_compiler import SemanticAtomSpec, compile_visual_clause
 from BackEnd.app.retrieval_v2.answer_spec import infer_answer_spec
+from BackEnd.app.retrieval_v2.corpus_stats import tokenize
 from BackEnd.app.retrieval_v2.prompt_planner import (
     CorpusAwarePromptPlanner,
     SemanticAtom,
@@ -67,7 +68,7 @@ _PROMPT_ROLES_BY_ATOM_TYPE = {
 
 
 def _tokens(text: str) -> list[str]:
-    return re.findall(r"\w+", text.lower(), flags=re.UNICODE)
+    return list(tokenize(text))
 
 
 def estimate_discriminative_weight(text: str) -> float:

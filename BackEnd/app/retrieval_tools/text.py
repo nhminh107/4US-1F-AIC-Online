@@ -99,12 +99,12 @@ def _build_query(
         if filters:
             request["knn"]["filter"] = {"bool": {"filter": filters}}
         return request
-    if mode == "exact":
+    if mode in {"exact", "phrase"}:
         request = {
             "query": {"match_phrase": {text_field: query}},
             "size": top_k,
         }
-    elif mode == "fuzzy":
+    elif mode in {"fuzzy", "match"}:
         request = {
             "query": {
                 "bool": {
@@ -154,8 +154,8 @@ def _source_time_range(source: Mapping[str, Any] | Any) -> tuple[int, int]:
     resolved_start_ms = start_ms if start_ms is not None else timestamp_ms
     resolved_end_ms = end_ms if end_ms is not None else timestamp_ms
     if resolved_start_ms is None or resolved_end_ms is None:
-        raise ValueError("Elasticsearch result has no usable timestamp fields")
-    return resolved_start_ms, resolved_end_ms
+        return 0, 0
+    return int(resolved_start_ms), int(resolved_end_ms)
 
 
 async def _text_search(

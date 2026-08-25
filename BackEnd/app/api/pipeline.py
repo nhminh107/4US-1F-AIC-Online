@@ -139,8 +139,8 @@ class FrameResolver:
         """Resolve a DB-backed media ID to a local file for ``FileResponse``."""
 
         frame = self.db_mng.get_frame_record_by_frame_id(frame_id)
-        if frame.frame_path is None:
-            raise FileNotFoundError(f"Frame '{frame_id}' has no image path.")
+        if frame is None or frame.frame_path is None:
+            raise FileNotFoundError(f"Frame '{frame_id}' not found or has no image path.")
         path = frame.frame_path
         if not path.is_absolute():
             path = PROJECT_ROOT / path

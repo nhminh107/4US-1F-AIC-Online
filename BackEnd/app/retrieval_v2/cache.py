@@ -17,8 +17,13 @@ class QueryEmbeddingCache:
         self.hits = 0
         self.misses = 0
 
-    def get(self, model_version: str, normalized_query: str) -> Any | None:
-        key = (model_version, normalized_query)
+    def get(
+        self,
+        model_version: str,
+        normalized_query: str,
+        model_name: str = "",
+    ) -> Any | None:
+        key = (model_name, model_version, normalized_query)
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
@@ -27,8 +32,14 @@ class QueryEmbeddingCache:
             self.misses += 1
             return None
 
-    def put(self, model_version: str, normalized_query: str, value: Any) -> None:
-        key = (model_version, normalized_query)
+    def put(
+        self,
+        model_version: str,
+        normalized_query: str,
+        value: Any,
+        model_name: str = "",
+    ) -> None:
+        key = (model_name, model_version, normalized_query)
         with self._lock:
             if key in self._cache:
                 self._cache.move_to_end(key)
