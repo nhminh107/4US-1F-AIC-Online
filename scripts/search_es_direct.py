@@ -17,6 +17,8 @@ SOURCE_INDEX_MAP = {
     "asr": "aic_hcm2026_text_transcript_active",
     "object": "aic_hcm2026_text_object_active",
     "metadata": "aic_hcm2026_text_metadata_active",
+    "caption": "aic_hcm2026_text_caption_active",
+    "captions": "aic_hcm2026_text_caption_active",
 }
 
 
