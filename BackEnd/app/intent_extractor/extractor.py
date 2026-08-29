@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from typing import Any
 
 from BackEnd.CONFIG import LLM_CONFIG
-from BackEnd.app.contracts.models import StructuredQuery
+from BackEnd.app.contracts.models import Event, StructuredQuery, TemporalConstraint
 from BackEnd.app.intent_extractor.prompts import extract_structured_query_prompt
 from BackEnd.app.intent_extractor.object_classes import normalize_object_constraints
 from BackEnd.app.intent_extractor.utils import strip_thinking_blocks
@@ -46,6 +47,8 @@ def build_instructor_client() -> Any:
         OpenAI(
             api_key=LLM_CONFIG.api_key,
             base_url=LLM_CONFIG.base_url,
+            timeout=10.0,
+            max_retries=1,
         ),
         mode=instructor.Mode.JSON,
     )
@@ -61,11 +64,13 @@ def _render_prompt(
     raw_text: str,
     query_id: str,
     feedback: str,
+    task_hint: str | None,
 ) -> str:
     return (
         prompt.replace("{raw_query}", raw_text)
         .replace("{query_id}", query_id)
         .replace("{feedback}", feedback)
+        .replace("{task_hint}", task_hint or "")
     )
 
 
@@ -79,15 +84,18 @@ def _normalize_feedback(*feedback_groups: list[str]) -> list[str]:
     return normalized
 
 
-def _coerce_raw_query(raw_query: Any) -> tuple[str, str, list[str]]:
+def _coerce_raw_query(
+    raw_query: Any,
+) -> tuple[str, str, list[str], str | None]:
     if isinstance(raw_query, str):
-        return raw_query, _stable_query_id(raw_query), []
+        return raw_query, _stable_query_id(raw_query), [], None
 
     raw_text = raw_query.text
     query_id = getattr(raw_query, "query_id", None) or _stable_query_id(raw_text)
     raw_feedback = getattr(raw_query, "feedback", None)
     feedback = _normalize_feedback([raw_feedback] if isinstance(raw_feedback, str) else [])
-    return raw_text, query_id, feedback
+    task_hint = getattr(raw_query, "task_hint", None)
+    return raw_text, query_id, feedback, task_hint
 
 
 def _with_fpt_system_prompt(messages: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -142,9 +150,15 @@ def _normalize_structured_query(
     *,
     query_id: str,
     feedback: list[str],
+    task_hint: str | None = None,
 ) -> StructuredQuery:
     if structured_query.task not in SUPPORTED_TASKS:
         raise ValueError(f"Unsupported task returned by intent extractor: {structured_query.task}")
+    if task_hint is not None and structured_query.task != task_hint:
+        raise ValueError(
+            "Intent extractor task does not match caller task hint: "
+            f"{structured_query.task} != {task_hint}"
+        )
 
     payload = structured_query.model_dump()
     payload["query_id"] = query_id
@@ -155,20 +169,75 @@ def _normalize_structured_query(
     return StructuredQuery.model_validate(payload)
 
 
-def _fallback_to_kis(
+_EVENT_MARKER = re.compile(r"(?<!\w)(E\d+)\s*:?\s*", re.IGNORECASE)
+
+
+def _labeled_events(raw_text: str) -> tuple[str, list[Event]]:
+    markers = list(_EVENT_MARKER.finditer(raw_text))
+    if not markers:
+        return raw_text.strip(), []
+    prefix = raw_text[: markers[0].start()].strip()
+    events: list[Event] = []
+    seen: set[str] = set()
+    for index, marker in enumerate(markers):
+        event_id = marker.group(1).upper()
+        end = markers[index + 1].start() if index + 1 < len(markers) else len(raw_text)
+        description = raw_text[marker.end() : end].strip(" \t\r\n.;")
+        if event_id in seen or not description:
+            continue
+        seen.add(event_id)
+        events.append(Event(event_id=event_id, description=description))
+    return prefix, events
+
+
+def _fallback_intent(
     raw_text: str,
     query_id: str,
     feedback: list[str],
+    task_hint: str | None = None,
 ) -> StructuredQuery:
     logger.warning(
-        "Intent extraction failed, using raw text fallback for raw_text=%r",
+        "Intent extraction failed/timed out, using smart rule-based fallback for raw_text=%r",
         raw_text,
-        exc_info=True,
     )
+
+    prefix, events = _labeled_events(raw_text)
+    if task_hint == "TRAKE" or (task_hint is None and len(events) >= 2):
+        if len(events) < 2:
+            raise ValueError("TRAKE requires at least two labeled events")
+        return StructuredQuery(
+            query_id=query_id,
+            task="TRAKE",
+            visual_queries=[prefix] if prefix else [],
+            events=events,
+            temporal_constraints=[
+                TemporalConstraint(before=left.event_id, after=right.event_id)
+                for left, right in zip(events, events[1:])
+            ],
+            feedback=feedback,
+        )
+
+    # Detect VQA
+    text_lower = raw_text.lower()
+    if task_hint == "VQA" or (
+        task_hint is None and ("?" in raw_text or "hỏi" in text_lower)
+    ):
+        return StructuredQuery(
+            query_id=query_id,
+            task="VQA",
+            question=raw_text,
+            visual_queries=[raw_text],
+            feedback=feedback,
+        )
+
+    # Default KIS
+    # Check for quotes indicating OCR text
+    ocr_constraints = re.findall(r'["“\']([^"”\']+)["”\']', raw_text)
     return StructuredQuery(
         query_id=query_id,
         task="KIS",
         visual_queries=[raw_text],
+        ocr_constraints=ocr_constraints,
         feedback=feedback,
     )
 
@@ -181,10 +250,9 @@ def extract_intent_sync(
     max_retries: int = DEFAULT_MAX_RETRIES,
     temperature: float = LLM_CONFIG.temperature,
 ) -> StructuredQuery:
-    raw_text, query_id, feedback = _coerce_raw_query(raw_query)
-    client = client or build_instructor_client()
-
+    raw_text, query_id, feedback, task_hint = _coerce_raw_query(raw_query)
     try:
+        client = client or build_instructor_client()
         structured_query = client.chat.completions.create(
             model=model,
             response_model=StructuredQuery,
@@ -197,6 +265,7 @@ def extract_intent_sync(
                             raw_text,
                             query_id,
                             "\n".join(feedback),
+                            task_hint,
                         ),
                     }
                 ]
@@ -208,6 +277,7 @@ def extract_intent_sync(
             structured_query,
             query_id=query_id,
             feedback=feedback,
+            task_hint=task_hint,
         )
     except InstructorRetryException as error:
         parsed_query = _parse_stripped_completion(error, StructuredQuery)
@@ -217,13 +287,13 @@ def extract_intent_sync(
                     parsed_query,
                     query_id=query_id,
                     feedback=feedback,
+                    task_hint=task_hint,
                 )
             except ValueError:
                 logger.warning("Intent extractor returned an unsupported task", exc_info=True)
-        return _fallback_to_kis(raw_text, query_id, feedback)
-    except ValueError:
-        logger.warning("Intent extractor returned an unsupported task", exc_info=True)
-        return _fallback_to_kis(raw_text, query_id, feedback)
+        return _fallback_intent(raw_text, query_id, feedback, task_hint)
+    except Exception:
+        return _fallback_intent(raw_text, query_id, feedback, task_hint)
 
 
 async def extract_intent(

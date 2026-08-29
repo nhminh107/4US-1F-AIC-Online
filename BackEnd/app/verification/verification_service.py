@@ -27,7 +27,9 @@ from BackEnd.app.verification.contracts import (
     VerificationPlan,
 )
 from BackEnd.app.verification.deterministic.asr_verifier import AsrExactVerifier
-from BackEnd.app.verification.deterministic.base import DeterministicClaimVerifier
+from BackEnd.app.verification.deterministic.kis_moment_verifier import (
+    KisMomentVerifier,
+)
 from BackEnd.app.verification.deterministic.negative_constraint_verifier import (
     NegativeConstraintVerifier,
 )
@@ -37,6 +39,9 @@ from BackEnd.app.verification.deterministic.object_verifier import (
 from BackEnd.app.verification.deterministic.ocr_verifier import OcrExactVerifier
 from BackEnd.app.verification.deterministic.temporal_verifier import (
     TemporalConstraintVerifier,
+)
+from BackEnd.app.verification.deterministic.trake_event_verifier import (
+    TrakeEventVerifier,
 )
 from BackEnd.app.verification.deterministic.vqa_answer_verifier import (
     VqaAnswerEvidenceVerifier,
@@ -89,6 +94,8 @@ class VerificationService:
                 TemporalConstraintVerifier(),
                 NegativeConstraintVerifier(),
                 VqaAnswerEvidenceVerifier(),
+                KisMomentVerifier(),
+                TrakeEventVerifier(),
             ]
         )
         self.decision_policy = decision_policy or DecisionPolicy()

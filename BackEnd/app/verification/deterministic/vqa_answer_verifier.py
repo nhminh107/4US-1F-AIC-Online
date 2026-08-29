@@ -26,7 +26,7 @@ class VqaAnswerEvidenceVerifier:
         supporting_ids = sorted(
             evidence.evidence_id
             for evidence in evidence_pack.text_evidence
-            if evidence.evidence_id in referenced_ids
+            if (not referenced_ids or evidence.evidence_id in referenced_ids)
             and contains_phrase(evidence.text, claim.text)
         )
         if supporting_ids:

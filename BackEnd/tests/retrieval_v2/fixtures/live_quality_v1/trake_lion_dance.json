@@ -1,0 +1,7 @@
+{
+  "query_id": "query-p1-trake-lion-dance",
+  "task": "TRAKE",
+  "prompt": "Đoạn video bắt đầu bằng ảnh cận đầu một con lân trắng, mũi đỏ, bên cạnh lá cờ trắng viền đỏ. E1 Khoảnh khắc đầu tiên xuất hiện đầy đủ hai con rồng vàng đang xoay vòng. E2 Khoảnh khắc đầu tiên con lân hoàn tất cú xoay người trên các thanh trụ. E3 Khoảnh khắc đầu tiên dùi chạm vào kẻng đồng múa lân.",
+  "gold": {"status": "needs_review", "video_id": null, "events": []},
+  "baseline": {"sequence_rank": null}
+}

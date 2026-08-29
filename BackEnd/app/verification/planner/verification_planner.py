@@ -12,7 +12,7 @@ from BackEnd.app.contracts.models import (
     VQAResult,
 )
 from BackEnd.app.verification.contracts import VerificationPlan
-from BackEnd.app.verification.enums import ClaimStatus, ClaimType
+from BackEnd.app.verification.enums import ClaimImportance, ClaimStatus, ClaimType
 from BackEnd.app.verification.planner.claim_builder import ClaimBuilder
 
 
@@ -109,4 +109,8 @@ class VerificationPlanner:
                 ClaimType.VQA_ANSWER_CLAIM,
             }:
                 evidence_types.update({"ocr", "asr", "caption"})
+            elif claim.claim_type == ClaimType.KIS_MOMENT:
+                evidence_types.add("frame")
+            elif claim.claim_type == ClaimType.TRAKE_EVENT:
+                evidence_types.update({"frame", "object", "ocr", "asr"})
         return sorted(evidence_types)

@@ -38,7 +38,7 @@ import logging
 import os
 import threading
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Literal, Protocol
 
 import numpy as np
 
@@ -154,6 +154,33 @@ class FaissIndexRegistry:
             if fid != -1  # FAISS trả -1 khi index có ít hơn top_k vector
         ]
 
+    @staticmethod
+    def _raw_subset_search(
+        index: "faiss.Index",
+        vector: np.ndarray,
+        faiss_ids: list[int],
+        top_k: int,
+    ) -> list[tuple[int, float]]:
+        """Exact inner-product search over every vector in an allowed ID subset."""
+
+        if not faiss_ids or top_k <= 0:
+            return []
+        query = np.asarray(vector, dtype=np.float32).reshape(-1)
+        ids = np.asarray(list(dict.fromkeys(faiss_ids)), dtype=np.int64)
+        try:
+            vectors = index.reconstruct_batch(ids)
+        except (AttributeError, RuntimeError, TypeError):
+            vectors = np.stack([index.reconstruct(int(faiss_id)) for faiss_id in ids])
+        matrix = np.asarray(vectors, dtype=np.float32)
+        scores = matrix @ query
+        count = min(top_k, len(ids))
+        if count == len(ids):
+            selected = np.arange(len(ids))
+        else:
+            selected = np.argpartition(scores, -count)[-count:]
+        ordered = sorted(selected, key=lambda idx: (-float(scores[idx]), int(ids[idx])))
+        return [(int(ids[idx]), float(scores[idx])) for idx in ordered]
+
     def search_frame_index(self, vector: np.ndarray, top_k: int) -> list[tuple[int, float]]:
         """Truy vấn ``frame.faiss``. Dùng bởi ``VisualRetrievalTools.frame_search()``."""
 
@@ -169,6 +196,21 @@ class FaissIndexRegistry:
         ``VisualRetrievalTools.shot_search()``."""
 
         return self._raw_search(self.shot_index, vector, top_k)
+
+    def search_frame_subset(
+        self, vector: np.ndarray, faiss_ids: list[int], top_k: int
+    ) -> list[tuple[int, float]]:
+        return self._raw_subset_search(self.frame_index, vector, faiss_ids, top_k)
+
+    def search_clip_subset(
+        self, vector: np.ndarray, faiss_ids: list[int], top_k: int
+    ) -> list[tuple[int, float]]:
+        return self._raw_subset_search(self.clip_index, vector, faiss_ids, top_k)
+
+    def search_shot_subset(
+        self, vector: np.ndarray, faiss_ids: list[int], top_k: int
+    ) -> list[tuple[int, float]]:
+        return self._raw_subset_search(self.shot_index, vector, faiss_ids, top_k)
 
 
 class _SearchIndexFn(Protocol):
@@ -229,6 +271,16 @@ class ClipEmbedder:
         )
         return vector.astype(np.float32)
 
+    def encode_texts(self, texts: list[str]) -> np.ndarray:
+        """Encode an ordered text batch in one model call."""
+
+        if not texts:
+            return np.empty((0, 0), dtype=np.float32)
+        vectors = self._text_model.encode(
+            texts, convert_to_numpy=True, normalize_embeddings=True
+        )
+        return np.asarray(vectors, dtype=np.float32)
+
     def encode_image(self, image_path: str) -> np.ndarray:
         """Trả về vector đã L2-normalize, dtype float32, shape (512,)."""
 
@@ -248,16 +300,19 @@ class ClipEmbedder:
 # 3. Cấu hình tìm kiếm
 # ---------------------------------------------------------------------------
 
+# Safety ceiling — cứng, không vượt quá bất kể caller yêu cầu gì.
+# FAISS IndexFlatIP search 1000/366k vectors ~1.5ms, an toàn cho production.
+ABSOLUTE_MAX_TOP_K = 1000
+
 
 @dataclass(frozen=True)
 class VisualSearchConfig:
     """Cấu hình cho 1 instance ``VisualRetrievalTools``.
 
-    ``default_top_k``/``max_top_k`` khác nhau giữa Fast Path và Query
-    Planner Agent (xem §0 ``module_visual_retrieval_tools.md``), nên dùng 2
-    factory method dựng sẵn thay vì 1 default dùng chung — tránh nhầm lẫn
-    khi Fast Path lỡ dùng cấu hình cho phép top_k=500 (quá nặng cho path
-    cần trả kết quả nhanh).
+    ``default_top_k`` là giá trị mặc định khi caller không truyền top_k.
+    Caller có thể truyền bất kỳ giá trị nào, nhưng sẽ bị cap bởi
+    ``ABSOLUTE_MAX_TOP_K`` (1000) — thay vì bị cap bởi ``max_top_k``
+    cũ (100) vốn quá thấp cho nhiều trường hợp truy xuất.
 
     ``index_version``/``model_version`` mặc định lấy đúng giá trị đang có
     trong dump dữ liệu thật (``Markdown_Doc/aic_hcmc_full.sql``): cả 3 bảng
@@ -276,20 +331,25 @@ class VisualSearchConfig:
     model_version: str = "0"
     pooling_method: str = "mean"
     index_version: int = 0
-    default_top_k: int = 50
-    max_top_k: int = 100
+    default_top_k: int = 200
+    max_top_k: int = ABSOLUTE_MAX_TOP_K
 
-    @classmethod
-    def for_fast_path(cls, **overrides) -> "VisualSearchConfig":
-        """Module 2A — Fast Retrieval Path: default_top_k=50, cap=100."""
 
-        return cls(default_top_k=50, max_top_k=100, **overrides)
+VisualRetriever = Literal["frame_search", "clip_search", "shot_search"]
 
-    @classmethod
-    def for_planner_agent(cls, **overrides) -> "VisualSearchConfig":
-        """Module 2B — Query Planner Agent: default_top_k=200, cap=500."""
 
-        return cls(default_top_k=200, max_top_k=500, **overrides)
+@dataclass(frozen=True)
+class VisualSearchRequest:
+    """One text query in an ordered native visual retrieval batch."""
+
+    retriever: VisualRetriever
+    query: str
+    top_k: int | None = None
+    event_id: str | None = None
+    tool_call_id: str | None = None
+    video_ids: list[str] | None = None
+    start_ms: int | None = None
+    end_ms: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -316,6 +376,10 @@ class VisualRetrievalTools:
         self.embedder = embedder
         self.db_mng = db_mng
         self.config = config or VisualSearchConfig()
+        self._subset_ids_cache: dict[
+            tuple[str, tuple[str, ...], int | None, int | None], list[int]
+        ] = {}
+        self._subset_ids_lock = threading.Lock()
 
     # -- Public API -------------------------------------------------------
 
@@ -326,6 +390,9 @@ class VisualRetrievalTools:
         top_k: int | None = None,
         event_id: str | None = None,
         tool_call_id: str | None = None,
+        video_ids: list[str] | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[SearchHit]:
         """Text -> frame hoặc image -> frame. Case ``image_ref`` chính là
         "image similarity search" (tìm ảnh tương tự 1 ảnh cho trước) —
@@ -333,7 +400,153 @@ class VisualRetrievalTools:
         không có pipeline resolve riêng."""
 
         vector = self._encode_frame_query(query, image_ref)
-        ranked = self._search_and_rank(vector, self.registry.search_frame_index, top_k)
+        return self._frame_search_from_vector(
+            vector,
+            top_k=top_k,
+            event_id=event_id,
+            tool_call_id=tool_call_id,
+            video_ids=video_ids,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+    def image_similarity_search(
+        self,
+        image_ref: str,
+        top_k: int | None = None,
+        event_id: str | None = None,
+        tool_call_id: str | None = None,
+    ) -> list[SearchHit]:
+        """Alias tường minh của ``frame_search(image_ref=...)``, khớp đúng
+        tên tool liệt kê trong ``ProposalOnlinePipeline.md`` §7.1.
+
+        Không tự triển khai lại pipeline — chỉ gọi thẳng ``frame_search()``
+        để tránh trùng lặp logic encode/resolve (2 tool cùng tìm trên
+        ``frame.faiss``, chỉ khác cách sinh vector query: text hay ảnh)."""
+
+        return self.frame_search(
+            image_ref=image_ref,
+            top_k=top_k,
+            event_id=event_id,
+            tool_call_id=tool_call_id,
+        )
+
+    def clip_search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        event_id: str | None = None,
+        tool_call_id: str | None = None,
+        video_ids: list[str] | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[SearchHit]:
+        vector = self.embedder.encode_text(query)
+        return self._clip_search_from_vector(
+            vector,
+            top_k=top_k,
+            event_id=event_id,
+            tool_call_id=tool_call_id,
+            video_ids=video_ids,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+    def shot_search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        event_id: str | None = None,
+        tool_call_id: str | None = None,
+        video_ids: list[str] | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[SearchHit]:
+        """Query thẳng ``shot.faiss`` (đã pooled sẵn ở Offline) — không
+        derive runtime từ frame embeddings."""
+
+        vector = self.embedder.encode_text(query)
+        return self._shot_search_from_vector(
+            vector,
+            top_k=top_k,
+            event_id=event_id,
+            tool_call_id=tool_call_id,
+            video_ids=video_ids,
+            start_ms=start_ms,
+            end_ms=end_ms,
+        )
+
+    def search_many(
+        self,
+        requests: list[VisualSearchRequest],
+    ) -> list[list[SearchHit]]:
+        """Run an ordered mixed frame/clip/shot text batch.
+
+        All request texts are encoded together. Search and canonical resolve
+        retain each request's own retriever, limits, scope, and provenance.
+        """
+
+        if not requests:
+            return []
+        vectors = self.embedder.encode_texts([request.query for request in requests])
+        if len(vectors) != len(requests):
+            raise RuntimeError(
+                "encode_texts() returned a different number of vectors than requests"
+            )
+
+        results: list[list[SearchHit]] = []
+        for request, vector in zip(requests, vectors):
+            common = {
+                "top_k": request.top_k,
+                "event_id": request.event_id,
+                "tool_call_id": request.tool_call_id,
+                "video_ids": request.video_ids,
+                "start_ms": request.start_ms,
+                "end_ms": request.end_ms,
+            }
+            if request.retriever == "frame_search":
+                hits = self._frame_search_from_vector(vector, **common)
+            elif request.retriever == "clip_search":
+                hits = self._clip_search_from_vector(vector, **common)
+            elif request.retriever == "shot_search":
+                hits = self._shot_search_from_vector(vector, **common)
+            else:
+                raise ValueError(f"Unsupported visual retriever: {request.retriever!r}")
+            results.append(hits)
+        return results
+
+    # -- Internal -----------------------------------------------------------
+
+    def _frame_search_from_vector(
+        self,
+        vector: np.ndarray,
+        *,
+        top_k: int | None,
+        event_id: str | None,
+        tool_call_id: str | None,
+        video_ids: list[str] | None,
+        start_ms: int | None,
+        end_ms: int | None,
+    ) -> list[SearchHit]:
+        if video_ids is None:
+            ranked = self._search_and_rank(vector, self.registry.search_frame_index, top_k)
+        else:
+            subset_ids = self._cached_subset_ids(
+                "frame",
+                video_ids,
+                start_ms,
+                end_ms,
+                lambda: self.db_mng.get_frame_faiss_ids_for_videos(
+                    video_ids,
+                    index_version=self.config.index_version,
+                    model_name=self.config.model_name,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                ),
+            )
+            ranked = self._search_subset_and_rank(
+                vector, self.registry.search_frame_subset, subset_ids, top_k
+            )
         if not ranked:
             return []
 
@@ -371,36 +584,36 @@ class VisualRetrievalTools:
             )
         return results
 
-    def image_similarity_search(
+    def _clip_search_from_vector(
         self,
-        image_ref: str,
-        top_k: int | None = None,
-        event_id: str | None = None,
-        tool_call_id: str | None = None,
+        vector: np.ndarray,
+        *,
+        top_k: int | None,
+        event_id: str | None,
+        tool_call_id: str | None,
+        video_ids: list[str] | None,
+        start_ms: int | None,
+        end_ms: int | None,
     ) -> list[SearchHit]:
-        """Alias tường minh của ``frame_search(image_ref=...)``, khớp đúng
-        tên tool liệt kê trong ``ProposalOnlinePipeline.md`` §7.1.
-
-        Không tự triển khai lại pipeline — chỉ gọi thẳng ``frame_search()``
-        để tránh trùng lặp logic encode/resolve (2 tool cùng tìm trên
-        ``frame.faiss``, chỉ khác cách sinh vector query: text hay ảnh)."""
-
-        return self.frame_search(
-            image_ref=image_ref,
-            top_k=top_k,
-            event_id=event_id,
-            tool_call_id=tool_call_id,
-        )
-
-    def clip_search(
-        self,
-        query: str,
-        top_k: int | None = None,
-        event_id: str | None = None,
-        tool_call_id: str | None = None,
-    ) -> list[SearchHit]:
-        vector = self.embedder.encode_text(query)
-        ranked = self._search_and_rank(vector, self.registry.search_clip_index, top_k)
+        if video_ids is None:
+            ranked = self._search_and_rank(vector, self.registry.search_clip_index, top_k)
+        else:
+            subset_ids = self._cached_subset_ids(
+                "clip",
+                video_ids,
+                start_ms,
+                end_ms,
+                lambda: self.db_mng.get_clip_faiss_ids_for_videos(
+                    video_ids,
+                    index_version=self.config.index_version,
+                    model_name=self.config.model_name,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                ),
+            )
+            ranked = self._search_subset_and_rank(
+                vector, self.registry.search_clip_subset, subset_ids, top_k
+            )
         if not ranked:
             return []
 
@@ -438,18 +651,38 @@ class VisualRetrievalTools:
             )
         return results
 
-    def shot_search(
+    def _shot_search_from_vector(
         self,
-        query: str,
-        top_k: int | None = None,
-        event_id: str | None = None,
-        tool_call_id: str | None = None,
+        vector: np.ndarray,
+        *,
+        top_k: int | None,
+        event_id: str | None,
+        tool_call_id: str | None,
+        video_ids: list[str] | None,
+        start_ms: int | None,
+        end_ms: int | None,
     ) -> list[SearchHit]:
-        """Query thẳng ``shot.faiss`` (đã pooled sẵn ở Offline) — không
-        derive runtime từ frame embeddings."""
-
-        vector = self.embedder.encode_text(query)
-        ranked = self._search_and_rank(vector, self.registry.search_shot_index, top_k)
+        if video_ids is None:
+            ranked = self._search_and_rank(vector, self.registry.search_shot_index, top_k)
+        else:
+            subset_ids = self._cached_subset_ids(
+                "shot",
+                video_ids,
+                start_ms,
+                end_ms,
+                lambda: self.db_mng.get_shot_faiss_ids_for_videos(
+                    video_ids,
+                    index_version=self.config.index_version,
+                    model_name=self.config.model_name,
+                    model_version=self.config.model_version,
+                    pooling_method=self.config.pooling_method,
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                ),
+            )
+            ranked = self._search_subset_and_rank(
+                vector, self.registry.search_shot_subset, subset_ids, top_k
+            )
         if not ranked:
             return []
 
@@ -488,8 +721,6 @@ class VisualRetrievalTools:
             )
         return results
 
-    # -- Internal -----------------------------------------------------------
-
     def _encode_frame_query(
         self, query: str | None, image_ref: str | None
     ) -> np.ndarray:
@@ -513,6 +744,23 @@ class VisualRetrievalTools:
             )
         return self.embedder.encode_image(str(frame_record.frame_path))
 
+    def _cached_subset_ids(
+        self,
+        entity_type: str,
+        video_ids: list[str],
+        start_ms: int | None,
+        end_ms: int | None,
+        loader,
+    ) -> list[int]:
+        key = (entity_type, tuple(sorted(set(video_ids))), start_ms, end_ms)
+        with self._subset_ids_lock:
+            cached = self._subset_ids_cache.get(key)
+        if cached is not None:
+            return cached
+        loaded = list(loader())
+        with self._subset_ids_lock:
+            return self._subset_ids_cache.setdefault(key, loaded)
+
     def _search_and_rank(
         self,
         vector: np.ndarray,
@@ -530,9 +778,23 @@ class VisualRetrievalTools:
             for rank, (faiss_id, raw_score) in enumerate(raw_hits, start=1)
         ]
 
+    def _search_subset_and_rank(
+        self,
+        vector: np.ndarray,
+        search_fn,
+        faiss_ids: list[int],
+        top_k: int | None,
+    ) -> list[tuple[int, float, int]]:
+        k = self._resolve_top_k(top_k)
+        raw_hits = search_fn(vector, faiss_ids, k)
+        return [
+            (faiss_id, raw_score, rank)
+            for rank, (faiss_id, raw_score) in enumerate(raw_hits, start=1)
+        ]
+
     def _resolve_top_k(self, top_k: int | None) -> int:
         k = top_k if top_k is not None else self.config.default_top_k
-        return min(k, self.config.max_top_k)
+        return min(k, self.config.max_top_k, ABSOLUTE_MAX_TOP_K)
 
     @staticmethod
     def _log_unresolved(entity_type: str, faiss_id: int) -> None:

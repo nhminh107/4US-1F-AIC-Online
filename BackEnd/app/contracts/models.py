@@ -102,6 +102,7 @@ class RawQuery(ContractModel):
     image_ref: str | None = None
     video_ref: str | None = None
     feedback: str | None = None
+    task_hint: Literal["KIS", "VQA", "TRAKE"] | None = None
 
 
 class Event(ContractModel):
@@ -149,12 +150,16 @@ class ToolCall(ContractModel):
 
 class SearchHit(CanonicalEntityRef):
     tool_call_id: str | None = None
+    atom_id: str | None = None
     event_id: str | None = None
+    prompt_role: str | None = None
+    retriever_family: str | None = None
     source: str = Field(min_length=1)
     entity_type: EntityType
     entity_id: str = Field(min_length=1)
     rank: int = Field(ge=1)
     raw_score: float
+    text_content: str | None = None
 
 
 class CandidateEvidence(TimeRangeModel):
@@ -163,7 +168,11 @@ class CandidateEvidence(TimeRangeModel):
     entity_id: str = Field(min_length=1)
     rank: int = Field(ge=1)
     raw_score: float
+    text_content: str | None = None
     tool_call_id: str | None = None
+    atom_id: str | None = None
+    prompt_role: str | None = None
+    retriever_family: str | None = None
 
 
 class CandidateRegion(TimeRangeModel):

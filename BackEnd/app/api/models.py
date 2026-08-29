@@ -17,6 +17,7 @@ from BackEnd.app.contracts.models import (
     VerifiedResult,
 )
 from BackEnd.app.trake.contracts import TrakeAlignerStatus
+from BackEnd.app.retrieval_v2.contracts import RetrievalPlan, SearchSessionState
 
 
 class TopKParameters(ContractModel):
@@ -46,6 +47,7 @@ class QueryRequest(ContractModel):
     prompt: str = Field(min_length=1)
     feedback: str | None = None
     session_id: str | None = None
+    task_hint: Literal["KIS", "VQA", "TRAKE"] | None = None
     top_k: TopKParameters = Field(default_factory=TopKParameters)
 
 
@@ -59,6 +61,11 @@ class VisualResult(KISResult):
     display_frame_id: str = Field(min_length=1)
     frame_idx: int = Field(ge=0)
     img_url: str = Field(min_length=1)
+
+
+class VQAVisualResult(VisualResult):
+    answer: str = Field(min_length=1, max_length=100)
+    answer_status: Literal["answered", "uncertain"]
 
 
 class TrakeEventResult(TemporalEventResult):
@@ -98,23 +105,32 @@ class QueryResponse(ContractModel):
         "fast_path",
         "query_planner",
         "query_planner_fallback",
+        "retrieval_v2",
     ]
     tool_calls: list[ToolCall] = Field(default_factory=list)
     search_hit_count: int = Field(ge=0)
     candidate_count: int = Field(ge=0)
-    results: list[VisualResult] | list[TrakeSequenceResult] = Field(
+    results: list[VisualResult] | list[VQAVisualResult] | list[TrakeSequenceResult] = Field(
         default_factory=list
     )
+    answer: str | None = Field(default=None, max_length=100)
+    answer_status: Literal["answered", "uncertain"] | None = None
     trake_status: TrakeAlignerStatus | None = None
     replan_required: bool = False
     missing_event_ids: list[str] = Field(default_factory=list)
     verification: VerificationSummary
+    retrieval_v2_plan: RetrievalPlan | None = None
+    retrieval_v2_session: SearchSessionState | None = None
     warnings: list[str] = Field(default_factory=list)
 
 
 class HealthResponse(ContractModel):
     status: Literal["ok"] = "ok"
     selective_verifier_enabled: bool
+    retrieval_v2_enabled: bool = True
+    retrieval_v2_corpus_stats_ready: bool = False
+    retrieval_v2_video_index_ready: bool = False
+    retrieval_v2_degraded_reasons: list[str] = Field(default_factory=list)
 
 
 __all__ = [
@@ -127,4 +143,5 @@ __all__ = [
     "VerificationItem",
     "VerificationSummary",
     "VisualResult",
+    "VQAVisualResult",
 ]

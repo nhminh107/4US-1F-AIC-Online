@@ -1,0 +1,7 @@
+{
+  "query_id": "query-p1-4-kis",
+  "task": "KIS",
+  "prompt": "Một đàn sư tử đang nghỉ ngơi và leo trèo trên các bục gỗ trong khu nuôi dưỡng, phía trước có bảng thông tin của London Zoo phục vụ công tác theo dõi và bảo tồn động vật. Sau đó có cảnh hai nhân viên mặc áo xanh lá đang cân và ghi nhận số liệu của một con vật trong khuôn viên sở thú.",
+  "gold": {"status": "reviewed", "video_id": "L22_V021", "official_image_start": 182, "official_image_end": 193},
+  "baseline": {"video_rank": 1, "moment_rank": 1}
+}

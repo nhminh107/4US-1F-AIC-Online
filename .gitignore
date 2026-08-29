@@ -262,3 +262,17 @@ tasks
 # numpy array trong RAM, truyen thang trong cung 1 process - xem muc 3 module_ocr.md),
 # nen khong con file/thu muc debug nao khac trong output/ can ignore.
 # =========================================================
+agent_tools
+.aic-agent-work
+# Thêm vào phần Environment variables:
+.env
+.env.*
+!.env.example
+!.env.*.example
+!.env.runtime.example
+
+
+# Thêm vào phần Docker / Runtime data dumps:
+release_package/
+sql_docker/
+*.dump

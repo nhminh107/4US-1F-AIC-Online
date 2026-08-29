@@ -1,0 +1,7 @@
+{
+  "query_id": "query-p1-19-kis",
+  "task": "KIS",
+  "prompt": "Con lân do hai người điều khiển đang đứng thẳng và xoay vòng trên đỉnh cột. Sau vài giây nghỉ, con lân bất ngờ nhảy qua hai chiếc cột kế bên, chúi đầu xuống ngoạm lấy quả bí đỏ kèm bông hoa màu vàng. Cảnh quay kết thúc khi con lân tiếp tục nhảy sang các cột tiếp theo.",
+  "gold": {"status": "reviewed", "video_id": "L24_V035", "official_image_start": 127, "official_image_end": 144},
+  "baseline": {"video_rank": 22, "moment_rank": 22}
+}

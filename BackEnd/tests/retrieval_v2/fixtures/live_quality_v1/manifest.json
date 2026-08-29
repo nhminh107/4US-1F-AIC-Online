@@ -1,0 +1,12 @@
+{
+  "schema_version": "retrieval-live-quality-v1",
+  "cases": [
+    "kis_lions.json",
+    "kis_lion_dance.json",
+    "kis_rain.json",
+    "kis_water_hyacinth.json",
+    "kis_noodle_bowl.json",
+    "vqa_earthquake_map.json",
+    "trake_lion_dance.json"
+  ]
+}

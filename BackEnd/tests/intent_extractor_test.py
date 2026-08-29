@@ -196,3 +196,52 @@ def test_extract_intent_normalizes_and_limits_object_classes():
     assert "object_constraints may contain only" in prompt
     assert "bus" in prompt
     assert "building" not in result.object_constraints
+
+
+def test_forced_trake_fallback_parses_event_markers_without_colons(monkeypatch):
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RuntimeError("intent model unavailable")
+
+    class FailingClient:
+        class chat:
+            completions = FailingCompletions()
+
+    result = extract_intent_sync(
+        RawQuery(
+            text=(
+                "Mở đầu là đầu lân trắng cạnh lá cờ. "
+                "E1 Hai con rồng vàng xoay vòng. "
+                "E2 Con lân hoàn tất cú xoay trên trụ. "
+                "E3 Dùi chạm vào kẻng đồng."
+            ),
+            task_hint="TRAKE",
+        ),
+        client=FailingClient(),
+    )
+
+    assert result.task == "TRAKE"
+    assert [event.event_id for event in result.events] == ["E1", "E2", "E3"]
+    assert [
+        (constraint.before, constraint.after)
+        for constraint in result.temporal_constraints
+    ] == [("E1", "E2"), ("E2", "E3")]
+    assert result.visual_queries == ["Mở đầu là đầu lân trắng cạnh lá cờ."]
+
+
+def test_forced_kis_fallback_does_not_become_vqa_because_of_question_mark():
+    class FailingCompletions:
+        def create(self, **kwargs):
+            raise RuntimeError("intent model unavailable")
+
+    class FailingClient:
+        class chat:
+            completions = FailingCompletions()
+
+    result = extract_intent_sync(
+        RawQuery(text="KIS: Người này đang cầm gì?", task_hint="KIS"),
+        client=FailingClient(),
+    )
+
+    assert result.task == "KIS"
+    assert result.question == ""

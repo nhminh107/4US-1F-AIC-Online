@@ -445,6 +445,10 @@ class PostgreManager:
     def search_object_detections(
         self,
         object_class: str,
+        limit: int | None = None,
+        video_ids: list[str] | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[tuple[ObjectDetection, Frame]]:
         """Return detections and canonical frame metadata for one object class.
 
@@ -459,7 +463,7 @@ class PostgreManager:
             return []
 
         with self.session_factory() as session:
-            rows = session.execute(
+            stmt = (
                 select(ObjectDetection, Frame)
                 .join(Frame, Frame.frame_id == ObjectDetection.frame_id)
                 .join(ClassID, ClassID.class_id == ObjectDetection.class_id)
@@ -470,17 +474,34 @@ class PostgreManager:
                     )
                 )
                 .order_by(
+                    func.row_number().over(
+                        partition_by=Frame.video_id,
+                        order_by=ObjectDetection.confidence.desc(),
+                    ),
+                    ObjectDetection.confidence.desc(),
                     Frame.video_id,
-                    Frame.shot_id,
                     Frame.timestamp_ms,
                     ObjectDetection.detection_id,
                 )
-            ).all()
+            )
+            if video_ids:
+                stmt = stmt.where(Frame.video_id.in_(video_ids))
+            if start_ms is not None:
+                stmt = stmt.where(Frame.timestamp_ms >= start_ms)
+            if end_ms is not None:
+                stmt = stmt.where(Frame.timestamp_ms <= end_ms)
+            if limit is not None and limit > 0:
+                stmt = stmt.limit(limit)
+            rows = session.execute(stmt).all()
         return [(detection, frame) for detection, frame in rows]
 
     def search_object_tracks(
         self,
         object_class: str,
+        limit: int | None = None,
+        video_ids: list[str] | None = None,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
     ) -> list[tuple[ObjectTrack, Shot]]:
         """Return continuous tracks and canonical shot metadata for one class."""
 
@@ -489,7 +510,7 @@ class PostgreManager:
             return []
 
         with self.session_factory() as session:
-            rows = session.execute(
+            stmt = (
                 select(ObjectTrack, Shot)
                 .join(Shot, Shot.shot_id == ObjectTrack.shot_id)
                 .join(ClassID, ClassID.class_id == ObjectTrack.class_id)
@@ -505,7 +526,16 @@ class PostgreManager:
                     ObjectTrack.start_ms,
                     ObjectTrack.track_id,
                 )
-            ).all()
+            )
+            if video_ids:
+                stmt = stmt.where(Shot.video_id.in_(video_ids))
+            if end_ms is not None:
+                stmt = stmt.where(ObjectTrack.start_ms <= end_ms)
+            if start_ms is not None:
+                stmt = stmt.where(ObjectTrack.end_ms >= start_ms)
+            if limit is not None and limit > 0:
+                stmt = stmt.limit(limit)
+            rows = session.execute(stmt).all()
         return [(track, shot) for track, shot in rows]
 
     def add_tracking_result(
@@ -909,6 +939,98 @@ class PostgreManager:
                 for row in rows
             ]
 
+    def get_frame_faiss_ids_for_videos(
+        self,
+        video_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[int]:
+        """Return every frame vector ID belonging to the shortlisted videos."""
+
+        if not video_ids:
+            return []
+        with self.session_factory() as session:
+            statement = (
+                select(FrameEmbeddingRecord.faiss_id)
+                .join(Frame, Frame.frame_id == FrameEmbeddingRecord.frame_id)
+                .where(
+                    Frame.video_id.in_(video_ids),
+                    FrameEmbeddingRecord.index_version == index_version,
+                    FrameEmbeddingRecord.model_name == model_name,
+                )
+            )
+            if start_ms is not None:
+                statement = statement.where(Frame.timestamp_ms >= start_ms)
+            if end_ms is not None:
+                statement = statement.where(Frame.timestamp_ms <= end_ms)
+            return list(session.scalars(statement).all())
+
+    def get_clip_faiss_ids_for_videos(
+        self,
+        video_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[int]:
+        """Return every clip vector ID belonging to the shortlisted videos."""
+
+        if not video_ids:
+            return []
+        with self.session_factory() as session:
+            statement = (
+                select(ClipEmbeddingRecord.faiss_id)
+                .join(ClipWindow, ClipWindow.clip_id == ClipEmbeddingRecord.clip_id)
+                .join(Shot, Shot.shot_id == ClipWindow.shot_id)
+                .where(
+                    Shot.video_id.in_(video_ids),
+                    ClipEmbeddingRecord.index_version == index_version,
+                    ClipEmbeddingRecord.model_name == model_name,
+                )
+            )
+            if start_ms is not None:
+                statement = statement.where(ClipWindow.end_ms >= start_ms)
+            if end_ms is not None:
+                statement = statement.where(ClipWindow.start_ms <= end_ms)
+            return list(session.scalars(statement).all())
+
+    def get_shot_faiss_ids_for_videos(
+        self,
+        video_ids: list[str],
+        *,
+        index_version: int,
+        model_name: str,
+        model_version: str,
+        pooling_method: str,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+    ) -> list[int]:
+        """Return every shot vector ID belonging to the shortlisted videos."""
+
+        if not video_ids:
+            return []
+        with self.session_factory() as session:
+            statement = (
+                select(ShotEmbeddingRecord.faiss_id)
+                .join(Shot, Shot.shot_id == ShotEmbeddingRecord.shot_id)
+                .where(
+                    Shot.video_id.in_(video_ids),
+                    ShotEmbeddingRecord.index_version == index_version,
+                    ShotEmbeddingRecord.model_name == model_name,
+                    ShotEmbeddingRecord.model_version == model_version,
+                    ShotEmbeddingRecord.pooling_method == pooling_method,
+                )
+            )
+            if start_ms is not None:
+                statement = statement.where(Shot.end_ms >= start_ms)
+            if end_ms is not None:
+                statement = statement.where(Shot.start_ms <= end_ms)
+            return list(session.scalars(statement).all())
+
     _EMBEDDING_RECORD_TABLES: dict[str, type[Base]] = {
         "frame": FrameEmbeddingRecord,
         "clip": ClipEmbeddingRecord,
@@ -1088,6 +1210,37 @@ class PostgreManager:
             Videos = session.scalars(statement).all()
 
             return [video_metadata_from_video(vid) for vid in Videos]
+    def batch_get_frames_for_regions(
+        self,
+        regions: list[tuple[str, int, int]],
+    ) -> dict[tuple[str, int, int], list[FrameMetadata]]:
+        """Batch load frames for multiple (video_id, start_ms, end_ms) intervals in a single query."""
+        if not regions:
+            return {}
+
+        results: dict[tuple[str, int, int], list[FrameMetadata]] = {r: [] for r in regions}
+        conditions = [
+            and_(
+                Frame.video_id == vid,
+                Frame.timestamp_ms >= start,
+                Frame.timestamp_ms <= end,
+            )
+            for vid, start, end in regions
+        ]
+
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(Frame).where(or_(*conditions)).order_by(Frame.video_id, Frame.timestamp_ms)
+            ).all()
+
+            for f in rows:
+                metadata = frame_metadata_from_frame(f)
+                for (vid, start, end) in regions:
+                    if f.video_id == vid and start <= f.timestamp_ms <= end:
+                        results[(vid, start, end)].append(metadata)
+
+        return results
+
     def get_list_frame_in_shot(self, shot_id: str) -> list[FrameMetadata]:
         """Return all frames belonging to a shot, ordered by frame index."""
 
@@ -1155,8 +1308,10 @@ class PostgreManager:
         converts this result into an ``EvidenceBundle``.
         """
 
-        if start_ms < 0 or end_ms < start_ms:
-            raise ValueError("Time range must satisfy 0 <= start_ms <= end_ms.")
+        # Defensive normalization of start_ms and end_ms
+        norm_start_ms = max(0, min(start_ms, end_ms))
+        norm_end_ms = max(0, max(start_ms, end_ms))
+        start_ms, end_ms = norm_start_ms, norm_end_ms
 
         all_modalities = {
             "shot",
@@ -1327,36 +1482,35 @@ class PostgreManager:
             if "caption" in requested:
                 caption_ids = _priority_numeric_ids(priority_ids, "caption-")
                 caption_priority = Caption.caption_id.in_(caption_ids) if caption_ids else None
-                captions = load_rows(
-                    select(Caption).where(
-                        or_(
-                            Caption.frame_id.in_(
-                                select(Frame.frame_id).where(
-                                    Frame.video_id == video_id,
-                                    Frame.timestamp_ms >= start_ms,
-                                    Frame.timestamp_ms <= end_ms,
-                                )
-                            ),
-                            Caption.clip_id.in_(
-                                select(ClipWindow.clip_id).join(Shot).where(
-                                    Shot.video_id == video_id,
-                                    ClipWindow.start_ms <= end_ms,
-                                    ClipWindow.end_ms >= start_ms,
-                                )
-                            ),
-                            Caption.shot_id.in_(
-                                select(Shot.shot_id).where(
-                                    Shot.video_id == video_id,
-                                    Shot.start_ms <= end_ms,
-                                    Shot.end_ms >= start_ms,
-                                )
-                            ),
-                        )
-                    ),
-                    "caption",
-                    (Caption.caption_id,),
-                    caption_priority,
+                frame_subq = select(Frame.frame_id).where(
+                    Frame.video_id == video_id,
+                    Frame.timestamp_ms >= start_ms,
+                    Frame.timestamp_ms <= end_ms,
                 )
+                clip_subq = select(ClipWindow.clip_id).join(Shot).where(
+                    Shot.video_id == video_id,
+                    ClipWindow.start_ms <= end_ms,
+                    ClipWindow.end_ms >= start_ms,
+                )
+                shot_subq = select(Shot.shot_id).where(
+                    Shot.video_id == video_id,
+                    Shot.start_ms <= end_ms,
+                    Shot.end_ms >= start_ms,
+                )
+                cap_frame = list(session.scalars(select(Caption).where(Caption.frame_id.in_(frame_subq))).all())
+                cap_clip = list(session.scalars(select(Caption).where(Caption.clip_id.in_(clip_subq))).all())
+                cap_shot = list(session.scalars(select(Caption).where(Caption.shot_id.in_(shot_subq))).all())
+                merged_dict: dict[int, Caption] = {}
+                for cap in [*cap_frame, *cap_clip, *cap_shot]:
+                    merged_dict[cap.caption_id] = cap
+                all_caps = list(merged_dict.values())
+                if caption_priority is not None and caption_ids:
+                    priority_set = set(caption_ids)
+                    all_caps.sort(key=lambda c: (0 if c.caption_id in priority_set else 1, c.caption_id))
+                else:
+                    all_caps.sort(key=lambda c: c.caption_id)
+                cap_limit = resolved_limits.get("caption")
+                captions = all_caps[:cap_limit] if cap_limit is not None else all_caps
 
         return [
             [shot_metadata_from_shot(shot) for shot in shots] if "shot" in requested else [],

@@ -1,0 +1,62 @@
+{
+  "schema_version": "retrieval-v2-replay/v1",
+  "stages": [
+    {
+      "name": "global",
+      "queries": {
+        "query-p1-2-kis": [
+          {"video_id": "L28_V001", "interval_ms": [1104380, 1107380]},
+          {"video_id": "L29_V014", "interval_ms": [505080, 511080]},
+          {"video_id": "L28_V020", "interval_ms": [300000, 380000]}
+        ],
+        "query-p1-4-kis": [
+          {"video_id": "L22_V021", "interval_ms": [658000, 660000], "frame_idx": 182},
+          {"video_id": "L22_V021", "interval_ms": [350000, 380000], "frame_idx": 110}
+        ],
+        "query-p1-18-kis": [
+          {"video_id": "L28_V014", "interval_ms": [205000, 220000], "frame_idx": 133},
+          {"video_id": "L26_V390", "interval_ms": [220000, 240000], "frame_idx": 154},
+          {"video_id": "L26_V433", "interval_ms": [205000, 225000], "frame_idx": 153}
+        ],
+        "query-p1-19-kis": [
+          {"video_id": "L24_V022", "interval_ms": [150000, 165000], "frame_idx": 40},
+          {"video_id": "L24_V019", "interval_ms": [375000, 395000], "frame_idx": 110},
+          {"video_id": "L24_V026", "interval_ms": [310000, 330000], "frame_idx": 122}
+        ],
+        "query-p1-20-kis": [
+          {"video_id": "L21_V026", "interval_ms": [247000, 249000], "frame_idx": 64},
+          {"video_id": "L21_V007", "interval_ms": [700000, 730000], "frame_idx": 178},
+          {"video_id": "L28_V008", "interval_ms": [575000, 600000], "frame_idx": 275}
+        ],
+        "query-p1-24-kis": [
+          {"video_id": "L29_V001", "interval_ms": [245000, 260000], "frame_idx": 204},
+          {"video_id": "L29_V014", "interval_ms": [450000, 475000], "frame_idx": 261},
+          {"video_id": "L29_V001", "interval_ms": [460000, 480000], "frame_idx": 312}
+        ]
+      }
+    },
+    {
+      "name": "reviewed",
+      "queries": {
+        "query-p1-2-kis": [
+          {"video_id": "L21_V003", "interval_ms": [32000, 75000], "frame_idx": 14}
+        ],
+        "query-p1-4-kis": [
+          {"video_id": "L22_V021", "interval_ms": [640000, 710000], "frame_idx": 182}
+        ],
+        "query-p1-18-kis": [
+          {"video_id": "L26_V389", "interval_ms": [225000, 260000], "frame_idx": 134}
+        ],
+        "query-p1-19-kis": [
+          {"video_id": "L24_V035", "interval_ms": [550000, 615000], "frame_idx": 127}
+        ],
+        "query-p1-20-kis": [
+          {"video_id": "L21_V026", "interval_ms": [230000, 340000], "frame_idx": 64}
+        ],
+        "query-p1-24-kis": [
+          {"video_id": "L29_V001", "interval_ms": [330000, 380000], "frame_idx": 223}
+        ]
+      }
+    }
+  ]
+}

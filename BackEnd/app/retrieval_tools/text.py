@@ -75,9 +75,19 @@ def _build_query(
     top_k: int,
     *,
     text_field: str = _TEXT_FIELD,
+    video_ids: list[str] | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> dict[str, Any]:
+    filters: list[dict[str, Any]] = []
+    if video_ids:
+        filters.append({"terms": {"video_id": video_ids}})
+    if end_ms is not None:
+        filters.append({"range": {"start_ms": {"lte": end_ms}}})
+    if start_ms is not None:
+        filters.append({"range": {"end_ms": {"gte": start_ms}}})
     if mode == "similarity":
-        return {
+        request = {
             "knn": {
                 "field": _VECTOR_FIELD,
                 "query_vector": embed_text(query),
@@ -86,24 +96,34 @@ def _build_query(
             },
             "size": top_k,
         }
-    if mode == "exact":
-        return {
+        if filters:
+            request["knn"]["filter"] = {"bool": {"filter": filters}}
+        return request
+    if mode in {"exact", "phrase"}:
+        request = {
             "query": {"match_phrase": {text_field: query}},
             "size": top_k,
         }
-    if mode == "fuzzy":
-        return {
+    elif mode in {"fuzzy", "match"}:
+        request = {
             "query": {
-                "match": {
-                    text_field: {
-                        "query": query,
-                        "fuzziness": "AUTO",
-                    }
+                "bool": {
+                    "should": [
+                        {"match_phrase": {text_field: {"query": query, "boost": 3}}},
+                        {"match": {text_field: {"query": query, "operator": "and", "boost": 1}}},
+                        {"match": {text_field: {"query": query, "fuzziness": "AUTO", "boost": 0.5}}},
+                        {"match": {f"{text_field}.shingle": {"query": query, "boost": 2}}},
+                    ],
+                    "minimum_should_match": 1,
                 }
             },
             "size": top_k,
         }
-    raise ValueError(f"Unsupported text search mode: {mode}")
+    else:
+        raise ValueError(f"Unsupported text search mode: {mode}")
+    if filters:
+        request["query"] = {"bool": {"must": [request["query"]], "filter": filters}}
+    return request
 
 
 def _get_value(value: Mapping[str, Any] | Any, field: str) -> Any:
@@ -134,8 +154,8 @@ def _source_time_range(source: Mapping[str, Any] | Any) -> tuple[int, int]:
     resolved_start_ms = start_ms if start_ms is not None else timestamp_ms
     resolved_end_ms = end_ms if end_ms is not None else timestamp_ms
     if resolved_start_ms is None or resolved_end_ms is None:
-        raise ValueError("Elasticsearch result has no usable timestamp fields")
-    return resolved_start_ms, resolved_end_ms
+        return 0, 0
+    return int(resolved_start_ms), int(resolved_end_ms)
 
 
 async def _text_search(
@@ -148,9 +168,20 @@ async def _text_search(
     index_name: str,
     entity_type: str,
     text_field: str = _TEXT_FIELD,
+    video_ids: list[str] | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[SearchHit]:
     client = _require_client()
-    request = _build_query(query, mode, top_k, text_field=text_field)
+    request = _build_query(
+        query,
+        mode,
+        top_k,
+        text_field=text_field,
+        video_ids=video_ids,
+        start_ms=start_ms,
+        end_ms=end_ms,
+    )
     response = await client.search(index=index_name, **request)
 
     results: list[SearchHit] = []
@@ -170,6 +201,7 @@ async def _text_search(
                 frame_id=_get_value(source, "frame_id"),
                 rank=rank,
                 raw_score=_required_value(hit, "_score"),
+                text_content=_get_value(source, text_field),
                 event_id=event_id,
                 tool_call_id=tool_call_id,
             )
@@ -183,6 +215,9 @@ async def ocr_search(
     mode: str = "fuzzy",
     event_id: str | None = None,
     tool_call_id: str | None = None,
+    video_ids: list[str] | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[SearchHit]:
     return await _text_search(
         query,
@@ -193,6 +228,9 @@ async def ocr_search(
         index_name=OCR_INDEX,
         entity_type="ocr",
         text_field="content",
+        video_ids=video_ids,
+        start_ms=start_ms,
+        end_ms=end_ms,
     )
 
 
@@ -202,6 +240,9 @@ async def asr_search(
     mode: str = "fuzzy",
     event_id: str | None = None,
     tool_call_id: str | None = None,
+    video_ids: list[str] | None = None,
+    start_ms: int | None = None,
+    end_ms: int | None = None,
 ) -> list[SearchHit]:
     return await _text_search(
         query,
@@ -212,32 +253,20 @@ async def asr_search(
         index_name=ASR_INDEX,
         entity_type="asr",
         text_field="content",
+        video_ids=video_ids,
+        start_ms=start_ms,
+        end_ms=end_ms,
     )
 
 
-async def caption_search(
-    query: str,
-    top_k: int = 100,
-    mode: str = "similarity",
-    event_id: str | None = None,
-    tool_call_id: str | None = None,
-) -> list[SearchHit]:
-    return await _text_search(
-        query,
-        top_k,
-        mode,
-        event_id,
-        tool_call_id,
-        index_name="caption_index",
-        entity_type="caption",
-    )
+# caption_search removed — no "caption_index" exists in Elasticsearch.
+# All caption data lives in the unified aic_hcm2026_text_v1 index.
 
 
 __all__ = [
     "AsyncElasticsearch",
     "ASR_INDEX",
     "asr_search",
-    "caption_search",
     "close_text_search",
     "configure_text_search",
     "embed_text",

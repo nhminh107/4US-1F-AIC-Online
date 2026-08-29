@@ -1,0 +1,16 @@
+{
+  "schema_version": "retrieval-v2-fixture-manifest/v1",
+  "fixture_version": "kis-gold-v1",
+  "gold_file": "gold_kis.json",
+  "replay_file": "replay_baseline.json",
+  "source_artifacts": [
+    ".aic-agent-work/answers_v2.json",
+    ".aic-agent-work/frame_review/manifest.json",
+    ".aic-agent-work/query-p1-2-l21v003-frames/manifest.json",
+    ".aic-agent-work/query-p1-2-review-r2/manifest.json",
+    "agent_tools/kis_exact_ranges_v2.json",
+    "agent_tools/kis_rank_config.json",
+    "agent_tools/query_p1_2_refined_visual.json",
+    "agent_tools/visual_queries.json"
+  ]
+}

@@ -34,6 +34,7 @@ class ClaimType(str, Enum):
     NEGATIVE_CONSTRAINT = "negative_constraint"
     VQA_ANSWER_CLAIM = "vqa_answer_claim"
     TRAKE_EVENT = "trake_event"
+    KIS_MOMENT = "kis_moment"
 
 
 class VerificationStatus(str, Enum):

@@ -47,6 +47,9 @@ from BackEnd.app.contracts.pipeline import FrameMetadata
 from BackEnd.app.Database.postgre_manager import PostgreManager
 from BackEnd.app.services.evidence_service import get_evidence_bundle, get_temporal_neighbors
 
+import math
+import statistics
+
 # Trong so tinh dung de tinh "anchor" (moc thoi gian trong tam cua 1 region),
 # tai su dung dung tap hang so ma FusionRanking da dung de 2 module nhat quan
 # voi nhau. CHI co 7 key (giong han che da biet cua FusionRanking): entity_type
@@ -96,17 +99,31 @@ class KISHandler:
         n = top_n if top_n is not None else TOP_N_KIS
         top_regions = ranked_regions[:n]
 
-        # Chuan hoa fusion_score (khong bi chan trong [0,1]) ve thang [0,1] de
-        # khop rang buoc cua KISResult.score. Min-max tren chinh Top-N dang xu ly
-        # (khong can tap validation/calibration) va la phep bien doi don dieu tang
-        # nen KHONG lam thay doi thu tu ranking da co.
+        # Sigmoid normalization tren Top-N bao toan ranking, giu khoang phan biet
+        # tot va khong ep candidate cuoi ve 0.0.
         normalized_scores = self.__normalize_scores(
             [region.fusion_score for region in top_regions]
         )
 
+        # Batch preload frames for top regions to avoid N+1 database queries
+        region_keys = [(r.video_id, r.start_ms, r.end_ms) for r in top_regions]
+        preloaded_frames_by_region: dict[tuple[str, int, int], list[FrameMetadata]] = {}
+        if hasattr(self.db_mng, "batch_get_frames_for_regions"):
+            try:
+                preloaded_frames_by_region = self.db_mng.batch_get_frames_for_regions(
+                    region_keys
+                )
+            except Exception:
+                preloaded_frames_by_region = {}
+
         results: list[KISResult] = []
         for region, score in zip(top_regions, normalized_scores):
-            frame = self.__resolve_representative_frame(region)
+            preloaded = preloaded_frames_by_region.get(
+                (region.video_id, region.start_ms, region.end_ms)
+            )
+            frame = self.__resolve_representative_frame(
+                region, preloaded_frames=preloaded
+            )
             if frame is None:
                 # Offline pipeline chua sinh frame nao cho video/shot lien quan
                 # (hoac du lieu chua duoc index). Bo qua candidate nay thay vi
@@ -148,28 +165,44 @@ class KISHandler:
             # -> khong co gi de so sanh, gan diem toi da cho tat ca.
             return [1.0 for _ in fusion_scores]
 
-        return [(value - lowest) / (highest - lowest) for value in fusion_scores]
+        median_val = statistics.median(fusion_scores)
+        spread = highest - lowest
+        alpha = 4.0 / spread if spread > 0 else 1.0
+
+        normalized = []
+        for x in fusion_scores:
+            val = 1.0 / (1.0 + math.exp(-alpha * (x - median_val)))
+            normalized.append(round(val, 4))
+        return normalized
 
     # ------------------------------------------------------------------
     # Buoc 2: Precise Moment Selection - chon frame dai dien cho 1 region
     # ------------------------------------------------------------------
     def __resolve_representative_frame(
-        self, region: RankedCandidateRegion
+        self,
+        region: RankedCandidateRegion,
+        preloaded_frames: list[FrameMetadata] | None = None,
     ) -> FrameMetadata | None:
         anchor_ms = self.__compute_anchor_ms(region)
 
-        # Level 0: lay evidence da resolve san trong dung khoang [start_ms, end_ms]
-        # cua region qua Evidence Utility co san (khong phai retrieval corpus-wide).
-        bundle = get_evidence_bundle(
-            region.video_id, region.start_ms, region.end_ms, self.db_mng
-        )
-        candidate_frames: list[FrameMetadata] = list(bundle.frames)
+        if preloaded_frames is not None:
+            candidate_frames: list[FrameMetadata] = list(preloaded_frames)
+            bundle: EvidenceBundle | None = None
+        else:
+            bundle = get_evidence_bundle(
+                region.video_id, region.start_ms, region.end_ms, self.db_mng
+            )
+            candidate_frames = list(bundle.frames)
 
         need_expand = not candidate_frames or self.__is_near_edge(
             anchor_ms, region.start_ms, region.end_ms
         )
 
         if need_expand:
+            if bundle is None:
+                bundle = get_evidence_bundle(
+                    region.video_id, region.start_ms, region.end_ms, self.db_mng
+                )
             expanded = self.__expand_frames_via_shots(region, bundle)
             if expanded:
                 # Gop danh sach, loai trung theo frame_id (uu tien giu ban ghi
